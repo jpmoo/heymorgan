@@ -4410,8 +4410,12 @@ async function clientCommand(command, rest, line, reply) {
   if (command === "ask") {
     stopActive();
     let turnOf;
-    try { turnOf = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "ask wants JSON: { text, files }" }); }
-    const attached = await readAttachments((turnOf.files ?? []).map(String));
+    try { turnOf = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "ask wants JSON: { text, files, attached }" }); }
+    // What the asker attached as it is (`attached`: Talaris's linked things, say) goes on
+    // beside the files read here — as the server's own `ask` takes them (handle, "ask").
+    const given = (Array.isArray(turnOf.attached) ? turnOf.attached : [])
+      .map((file) => ({ name: basename(String(file?.name ?? "file")), content: String(file?.content ?? "") }));
+    const attached = [...given, ...await readAttachments((turnOf.files ?? []).map(String))];
     line = `ask ${JSON.stringify({ text: String(turnOf.text ?? ""), attached })}`;
   }
   // Settings may set the server working for a while (a tidying of memory): it is given longer.
