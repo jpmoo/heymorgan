@@ -1,10 +1,15 @@
 # Morgan's client protocol
 
-**Version 1.4**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.5**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.5** (2026-10-25): each MCP tool is **allow** (run when called), **ask**
+  (put to the user for a yes first) or **off** — `mode` in `mcp.list`, set with
+  `mcp.tool`'s `mode`; a client's offered tools carry their `mode`; and
+  `client.mcp.*` changes a client's own servers in its `client.json`, from its
+  own socket. `on` and true/false still work.
 - **1.4** (2026-10-24): a client's own MCP servers — `mcpServers` in
   `client.json`, offered in the hello's `tools` and `can: ["mcp"]`, run on the
   `mcp` ability; `mcp.list` shows them with `device`.
@@ -359,12 +364,25 @@ restarts the daemon.
 |---|---|---|
 | `ollama.models` | `url` (default the configured one) | `chat: [{ name, gb }]`, `embedding: [{ name, gb }]` |
 | `oracle.account` | — | `loggedIn, email, plan`, and `error` if `claude` did not answer |
-| `mcp.list` | — | `servers: [{ name, target, allow, hasKey, connected, error, tools: [{ name, readOnly, on }] }]` |
+| `mcp.list` | — | `servers: [{ name, target, allow, hasKey, connected, error, tools: [{ name, readOnly, mode, on }] }]`; `mode` is `allow`, `ask` or `off`, and `on` is `mode` not `off` |
 | `mcp.add` | `name`, and `url` (and `key`) or `command` | as `mcp.list` |
 | `mcp.remove` | `name` | as `mcp.list` |
 | `mcp.allow` | `name`, `allow`: `all` \| other | as `mcp.list` |
-| `mcp.tool` | `name`, `tool`, `on` | as `mcp.list` |
+| `mcp.tool` | `name`, `tool`, and `mode` (`allow` \| `ask` \| `off`) or `on` | as `mcp.list` |
 | `mcp.reconnect` | — | as `mcp.list` |
+| `client.mcp.list` | — | `{ role, servers: [{ name, target, allow, connected, error, tools: [{ name, readOnly, mode }] }] }`: this machine's own servers (`client.json`), every tool they offer, off ones too |
+| `client.mcp.add` | `name`, and `url` (and `key`) or `command` | as `client.mcp.list` |
+| `client.mcp.remove` | `name` | as `client.mcp.list` |
+| `client.mcp.allow` | `name`, `allow`: `all` \| other | as `client.mcp.list` |
+| `client.mcp.tool` | `name`, `tool`, `mode` | as `client.mcp.list` |
+
+**A tool's mode.** Set by name it wins; otherwise a tool that reads is
+`allow`, and one that changes something is `ask` when its server's `allow` is
+`all` and `off` when not. A choice that only repeats that is not kept. Only
+`ask` tools wait for the user's yes; an `allow` tool that changes something is
+done when the model calls it. The `client.mcp.*` ops are answered by the
+daemon whose socket they reach, whatever its role: on a client they change
+what it offers the server, which is told at once.
 
 **Note:** `mcp.add` with `command` starts that command on the daemon's machine.
 Anything that can send `admin` can run programs as the user.
@@ -472,8 +490,9 @@ prefix is the proxy's to strip (see `docs/server-and-satellites.md`).
   source it may look through (`screen`, `clipboard`, `camera`, …), `files`
   if it has folders Morgan may read, and `mcp` if it runs MCP servers of its
   own. It may be sent again later on its own: `{ "can": [ … ] }`.
-- `tools` (optional) lists the tools of the device's own MCP servers —
-  `[{ server, tools: [{ name, description, inputSchema, annotations }] }]` —
+- `tools` (optional) lists the tools of the device's own MCP servers, each
+  with its `mode` (1.5; one without is `allow` if it reads, `ask` if not) —
+  `[{ server, tools: [{ name, description, inputSchema, annotations, mode }] }]` —
   only those its `client.json` allows (see *A client's own MCP servers*). Sent
   again with `can` when they change: `{ "can": [ … ], "tools": [ … ] }`.
 

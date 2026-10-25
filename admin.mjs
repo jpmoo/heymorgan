@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BASICS, CONFIG, KOKORO, KOKORO_VOICES, PIPER, VOICES, loadConfig, oracleEnv, readOnly, readSealed, saveConfig, toolAllowed, voiceFile, voiceRate, writeSealed } from "./lib.mjs";
+import { BASICS, CONFIG, KOKORO, KOKORO_VOICES, PIPER, TOOL_MODES, VOICES, loadConfig, oracleEnv, readOnly, readSealed, saveConfig, toolMode, voiceFile, voiceRate, writeSealed } from "./lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
@@ -214,12 +214,18 @@ export function createAdmin(d) {
             hasKey: Boolean(spec.headers?.Authorization),
             connected: Boolean(known?.tools),
             error: known?.error ?? null,
-            tools: (known?.tools ?? []).map((tool) => ({ name: tool.name, readOnly: readOnly(tool), on: toolAllowed(spec, tool) })),
+            tools: (known?.tools ?? []).map((tool) => {
+              const mode = toolMode(spec, tool);
+              return { name: tool.name, readOnly: readOnly(tool), mode, on: mode !== "off" };
+            }),
           };
         }).concat([...d.mcpAll].filter(([, known]) => known.device).map(([name, known]) => ({
           // Kept on a client, in its client.json: listed, changed there.
           name, target: `on ${known.device}`, device: known.device, allow: "device", hasKey: false, connected: true, error: null,
-          tools: known.tools.map((tool) => ({ name: tool.name, readOnly: readOnly(tool), on: true })),
+          tools: known.tools.map((tool) => {
+            const mode = TOOL_MODES.includes(tool.mode) ? tool.mode : readOnly(tool) ? "allow" : "ask";
+            return { name: tool.name, readOnly: readOnly(tool), mode, on: mode !== "off" };
+          }),
         }))),
       };
     },
@@ -237,16 +243,52 @@ export function createAdmin(d) {
     },
     "mcp.remove": ({ name }) => server(name, () => undefined),
     "mcp.allow": ({ name, allow }) => server(name, (spec) => { if (allow === "all") spec.allow = "all"; else delete spec.allow; return spec; }),
-    "mcp.tool": ({ name, tool, on }) => server(name, (spec) => {
-      const known = d.mcpAll.get(name)?.tools?.find((entry) => entry.name === tool);
-      spec.tools = { ...spec.tools, [tool]: Boolean(on) };
-      // A choice that only repeats the default is not worth keeping.
-      if (known && Boolean(on) === (spec.allow === "all" || readOnly(known))) delete spec.tools[tool];
-      if (!Object.keys(spec.tools).length) delete spec.tools;
+    "mcp.tool": ({ name, tool, mode, on }) => server(name, (spec) => setToolMode(spec, d.mcpAll.get(name)?.tools, tool, mode, on)),
+    // This machine's own servers (client.json): answered here even on a client,
+    // since they run here — the server only ever sees what they offer.
+    "client.mcp.list": () => d.client.mcpList(),
+    "client.mcp.add": ({ name, url, key, command }) => {
+      name = String(name ?? "").replace(/[^A-Za-z0-9-]/g, "");
+      if (!name) throw new Error("the server needs a short name of letters and digits");
+      const spec = {};
+      if (url) {
+        spec.url = String(url).trim();
+        if (key) spec.headers = { Authorization: `Bearer ${String(key).trim()}` };
+      } else if (command) {
+        [spec.command, ...spec.args] = String(command).trim().split(/\s+/);
+      } else throw new Error("give a URL or a command");
+      return d.client.mcpChange(name, () => spec);
+    },
+    "client.mcp.remove": ({ name }) => d.client.mcpChange(String(name), () => undefined),
+    "client.mcp.allow": ({ name, allow }) => d.client.mcpChange(String(name), (spec) => {
+      if (!spec) throw new Error(`this machine has no MCP server called ${name}`);
+      if (allow === "all") spec.allow = "all"; else delete spec.allow;
       return spec;
+    }),
+    "client.mcp.tool": ({ name, tool, mode, on }) => d.client.mcpChange(String(name), (spec) => {
+      if (!spec) throw new Error(`this machine has no MCP server called ${name}`);
+      return setToolMode(spec, d.client.mcpList().servers.find((s) => s.name === name)?.tools?.map((t) => ({ name: t.name, annotations: { readOnlyHint: t.readOnly } })), tool, mode, on);
     }),
     "mcp.reconnect": async () => { await d.reconnectMcp(); return ops["mcp.list"](); },
   };
+
+  /*
+   * One tool's mode — "allow", "ask" or "off" (or `on`, true or false, as
+   * before 1.5) — kept on the server's entry. A choice that only repeats the
+   * default is not kept, so changing the blanket setting still moves it.
+   */
+  function setToolMode(spec, known, tool, mode, on) {
+    if (mode === undefined) mode = on ? undefined : "off";
+    const entry = known?.find((t) => t.name === tool);
+    if (mode !== undefined && !TOOL_MODES.includes(mode)) throw new Error("a tool is allow, ask or off");
+    spec.tools = { ...spec.tools };
+    delete spec.tools[tool];
+    // `on` with no mode: back to whatever it would be if it were on by default.
+    if (mode === undefined && entry) mode = readOnly(entry) ? "allow" : "ask";
+    if (mode !== undefined && !(entry && toolMode(spec, entry) === mode)) spec.tools[tool] = mode;
+    if (!Object.keys(spec.tools).length) delete spec.tools;
+    return spec;
+  }
 
   const clean = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
 

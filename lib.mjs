@@ -163,11 +163,22 @@ export function unseal(sealed) {
 export const readSealed = (file) => unseal(readFileSync(file, "utf8").trim());
 export const writeSealed = (file, text) => writeFileSync(file, seal(text) + "\n", { mode: 0o600 });
 
-// Whether the assistant is given one of an MCP server's tools: a choice made
-// for that tool by name wins; otherwise the server's blanket setting decides,
-// which is read-only tools unless it says all.
 export const readOnly = (tool) => Boolean(tool.annotations?.readOnlyHint);
-export const toolAllowed = (spec, tool) => spec.tools?.[tool.name] ?? (spec.allow === "all" || readOnly(tool));
+
+// What Morgan does with a tool (protocol 1.5): "allow" runs it when the model
+// calls it, "ask" puts it to the user for a yes first, "off" keeps it from the
+// model. A tool's own setting wins — "allow", "ask" or "off", or the older true
+// and false — and otherwise: a tool that reads is allowed, one that changes
+// something asks if the server's blanket setting is "all" and is off if not.
+export const TOOL_MODES = ["allow", "ask", "off"];
+export function toolMode(spec, tool) {
+  const set = spec.tools?.[tool.name];
+  if (TOOL_MODES.includes(set)) return set;
+  if (set === false) return "off";
+  if (set === true) return readOnly(tool) ? "allow" : "ask";
+  return readOnly(tool) ? "allow" : spec.allow === "all" ? "ask" : "off";
+}
+export const toolAllowed = (spec, tool) => toolMode(spec, tool) !== "off";
 
 // The service, under its old name where it has not been switched over yet.
 // On a server it is a system service, as the other apps there are.

@@ -11,13 +11,13 @@ import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, MIRROR, SHARE } from "./env.mjs
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
-import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, readOnly, serviceName, readSealed, toolAllowed, writeSealed } from "./lib.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, TOOL_MODES, readOnly, serviceName, readSealed, toolAllowed, toolMode, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
@@ -1966,12 +1966,13 @@ async function connectMcpServers() {
       const tools = offered.filter((tool) => toolAllowed(spec, tool));
       mcpClients.set(name, client);
       for (const tool of tools) {
-        if (!readOnly(tool)) changes.add(`${name}__${tool.name}`);
+        const asks = toolMode(spec, tool) === "ask";
+        if (asks) changes.add(`${name}__${tool.name}`);
         mcpTools.push({
           type: "function",
           function: {
             name: `${name}__${tool.name}`,
-            description: (readOnly(tool) ? "" : "Puts this action forward for the user's yes; call it as soon as they ask for it. ") + (tool.description ?? ""),
+            description: (asks ? "Puts this action forward for the user's yes; call it as soon as they ask for it. " : "") + (tool.description ?? ""),
             parameters: tool.inputSchema ?? { type: "object", properties: {} },
           },
         });
@@ -4049,9 +4050,17 @@ const admin = createAdmin({
   garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
   // Where this machine's Morgan lives: here, or on a server it is a client of.
   client: {
+    mcpList: () => ownMcpList(),
+    mcpChange: (name, change) => changeOwnMcp(name, change),
     get: () => ({ role: ROLE, server: CLIENT.server ?? "", device: CLIENT.device ?? hostname(), hasKey: Boolean(CLIENT.key), connected: Boolean(homeLink) }),
     set({ server, key, device }) {
-      if (!server) { rmSync(CLIENT_FILE, { force: true }); return; }
+      if (!server) {
+        // Local again: this machine's own MCP servers stay; the rest of the file goes.
+        if (CLIENT.mcpServers && Object.keys(CLIENT.mcpServers).length) {
+          writeFileSync(CLIENT_FILE, JSON.stringify({ mcpServers: CLIENT.mcpServers }, null, 2) + "\n", { mode: 0o600 });
+        } else rmSync(CLIENT_FILE, { force: true });
+        return;
+      }
       mkdirSync(dirname(CLIENT_FILE), { recursive: true });
       // What else the file holds (this machine's MCP servers) is kept.
       writeFileSync(CLIENT_FILE, JSON.stringify({ ...CLIENT, server, key: key || CLIENT.key, device: device || CLIENT.device || hostname() }, null, 2) + "\n", { mode: 0o600 });
@@ -4172,12 +4181,15 @@ function offerDeviceTools(link, device) {
     mcpAll.set(name, { tools, device: device.name });
     for (const tool of tools) {
       if (!tool?.name) continue;
-      if (!readOnly(tool)) changes.add(`${name}__${tool.name}`);
+      // What the device's own settings say of it (1.5); a client from before says nothing, and a tool that changes something then asks.
+      const mode = TOOL_MODES.includes(tool.mode) ? tool.mode : readOnly(tool) ? "allow" : "ask";
+      if (mode === "off") continue;
+      if (mode === "ask") changes.add(`${name}__${tool.name}`);
       mcpTools.push({
         type: "function",
         function: {
           name: `${name}__${tool.name}`,
-          description: (readOnly(tool) ? "" : "Puts this action forward for the user's yes; call it as soon as they ask for it. ") + (tool.description ?? ""),
+          description: (mode === "ask" ? "Puts this action forward for the user's yes; call it as soon as they ask for it. " : "") + (tool.description ?? ""),
           parameters: tool.inputSchema ?? { type: "object", properties: {} },
         },
       });
@@ -4269,9 +4281,11 @@ const abilities = () => [...cfg.sight.filter(present).map((source) => `sight:${s
   ...(deviceMcp.size ? ["mcp"] : [])];
 
 // This machine's own MCP servers (client.json), started here and offered to the server.
-const deviceMcp = new Map(); // name -> { client, tools }
-const deviceTools = () => [...deviceMcp].map(([server, { tools }]) => ({
-  server, tools: tools.map(({ name, description, inputSchema, annotations }) => ({ name, description, inputSchema, annotations })),
+const deviceMcp = new Map(); // name -> { client, spec, offered, tools }: every tool it offers, and those not off
+const deviceMcpErrors = new Map(); // name -> why it could not be started
+const deviceTools = () => [...deviceMcp].map(([server, { spec, tools }]) => ({
+  // Each with what this machine's settings say of it (1.5): the server asks first, or does not.
+  server, tools: tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations, mode: toolMode(spec, tool) })),
 }));
 
 async function startDeviceMcp() {
@@ -4279,16 +4293,76 @@ async function startDeviceMcp() {
     const client = new McpClient(name, spec);
     try {
       const offered = await client.start();
-      deviceMcp.set(name, { client, tools: offered.filter((tool) => toolAllowed(spec, tool)) });
+      deviceMcp.set(name, { client, spec, offered, tools: offered.filter((tool) => toolAllowed(spec, tool)) });
+      deviceMcpErrors.delete(name);
       console.error(`mcp: ${name} (this machine's) connected, ${offered.length} tools`);
     } catch (error) {
       client.stop();
+      deviceMcpErrors.set(name, error.message);
       fail(`mcp: ${name} (this machine's) failed to connect: ${error.message}`);
     }
   }
   if (homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities(), tools: deviceTools() }));
 }
 if (ROLE === "client") startDeviceMcp();
+
+/*
+ * This machine's own servers, changed from its settings (`client.mcp.*`):
+ * client.json written (owner-only — it holds the server's key), and the change
+ * taken up — as a client, the servers whose entry changed started again and
+ * the server told what is now offered; running locally, every server again.
+ */
+async function changeOwnMcp(name, change) {
+  const servers = { ...(CLIENT.mcpServers ?? {}) };
+  const next = change(servers[name] ? structuredClone(servers[name]) : undefined);
+  if (next === undefined) delete servers[name]; else servers[name] = next;
+  CLIENT.mcpServers = servers;
+  mkdirSync(dirname(CLIENT_FILE), { recursive: true });
+  writeFileSync(CLIENT_FILE, JSON.stringify(CLIENT, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(CLIENT_FILE, 0o600);
+  if (ROLE === "client") {
+    const held = deviceMcp.get(name);
+    // Only what is allowed changed: the running server is kept, its tools filtered again.
+    if (held && next && JSON.stringify({ ...held.spec, allow: 0, tools: 0 }) === JSON.stringify({ ...next, allow: 0, tools: 0 })) {
+      held.spec = next;
+      held.tools = held.offered.filter((tool) => toolAllowed(next, tool));
+    } else {
+      held?.client.stop();
+      deviceMcp.delete(name);
+      deviceMcpErrors.delete(name);
+      if (next) {
+        const client = new McpClient(name, next);
+        try {
+          const offered = await client.start();
+          deviceMcp.set(name, { client, spec: next, offered, tools: offered.filter((tool) => toolAllowed(next, tool)) });
+        } catch (error) {
+          client.stop();
+          deviceMcpErrors.set(name, error.message);
+        }
+      }
+    }
+    if (homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities(), tools: deviceTools() }));
+  } else await reconnectMcp();
+  return ownMcpList();
+}
+
+// This machine's own servers, as the settings show them.
+function ownMcpList() {
+  return {
+    role: ROLE,
+    servers: Object.entries(CLIENT.mcpServers ?? {}).map(([name, spec]) => {
+      const held = deviceMcp.get(name);
+      const offered = held?.offered ?? mcpAll.get(name)?.tools ?? [];
+      return {
+        name, target: spec.url ?? [spec.command, ...(spec.args ?? [])].join(" "),
+        allow: spec.allow === "all" ? "all" : "read",
+        connected: Boolean(held || mcpAll.get(name)?.tools),
+        error: deviceMcpErrors.get(name) ?? mcpAll.get(name)?.error ?? null,
+        tools: offered.map((tool) => ({ name: tool.name, readOnly: readOnly(tool), mode: toolMode(spec, tool) })),
+      };
+    }),
+  };
+}
 
 // Something the server asked of this machine, done here and answered.
 async function doForServer(link, { id, name, args = {} }) {
