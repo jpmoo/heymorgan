@@ -100,6 +100,9 @@ export function createAdmin(d) {
     }),
 
     // The gardener: what it changed, day by day; one change undone; a tidying now.
+    // Held while a demo is shown (protocol 1.6): nothing new remembered, for some hours at most.
+    "memory.hold": ({ on = true, hours = 12 }) => { d.hold.set(on !== false, hours); return d.hold.get(); },
+    "memory.hold.get": () => d.hold.get(),
     "memory.garden.report": () => ({ days: d.garden.report() }),
     "memory.garden.undo": ({ id }) => d.garden.undo(String(id)),
     "memory.garden.run": async () => ({ changes: (await d.garden.run())?.actions.length ?? 0, days: d.garden.report() }),

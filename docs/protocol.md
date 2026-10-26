@@ -5,6 +5,10 @@
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.6** (2026-10-26): `memory.hold` — while a demo is shown, nothing new is
+  remembered (no notes, documents or pictures kept, no tidying), for some hours
+  at most and not across a restart; `memory.hold.get`, and `memoryHeld` in
+  `status`.
 - **1.5** (2026-10-25): each MCP tool is **allow** (run when called), **ask**
   (put to the user for a yes first) or **off** — `mode` in `mcp.list`, set with
   `mcp.tool`'s `mode`; a client's offered tools carry their `mode`; and
@@ -327,6 +331,8 @@ given. A key must start `hc_`. It always restarts the daemon.
 | `memory.document.delete` | `title` | — |
 | `memory.picture.view` | `label` | `path`: a JPEG written to `$XDG_RUNTIME_DIR`, deleted after two minutes; `data`: the same picture, base64 |
 | `memory.picture.delete` | `label` | — |
+| `memory.hold` | `on` (default true), `hours` (default 12, at most 24) | `held`, `until`: nothing new is remembered until then, or until `on: false`. Held only in memory: a restart lets go |
+| `memory.hold.get` | — | `held`, `until` |
 | `memory.garden.report` | — | `days`: what the gardener changed, day by day |
 | `memory.garden.run` | — | `changes`, `days`: tidy memory now. Can take minutes. |
 | `memory.garden.undo` | `id` | whatever the undo returns |

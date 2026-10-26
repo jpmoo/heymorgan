@@ -301,6 +301,9 @@ const morganPrompt = () => [
   "own words and just as briefly. Speak to the user as you, never about them by name. Never announce what you are about",
   "to do (let me ask, let me check, I need to clarify): do it, and say only the answer.",
   "You keep a long-term memory about the user, in notes organized into topics that you create and curate yourself.",
+  memoryHeld()
+    ? "Right now your memory is held, because a demonstration is on: nothing said is remembered and you do not save notes, documents or pictures. Answer from what you know; if asked to remember something, say you can't while the demo is on."
+    : "",
   memoryInFull()
     ? "All of it is shown below, under Your memory: answer from it directly, without saying that you are looking. When the user"
     : "It is too large to show whole, so the notes most likely to bear on what was just said are picked out for you and shown below, under From your memory, with the list of topics. Answer from those notes directly; call recall to read a whole topic only when they are not enough. When the user",
@@ -653,6 +656,7 @@ async function recognise(bytes, known) {
 
 // Keep a picture under a label: the one just looked at if there is one, or a new one.
 async function rememberPicture(args) {
+  if (memoryHeld()) return HELD;
   const label = String(args.label ?? "").trim();
   const source = String(args.source ?? "camera");
   if (!slug(label)) return "No label given.";
@@ -804,6 +808,7 @@ function documents() {
 }
 
 function keepDocument(title, source, text) {
+  if (memoryHeld()) return;
   mkdirSync(DOCUMENTS, { recursive: true });
   writeSealed(documentPath(title), JSON.stringify({ title, source, t: Date.now(), text }));
   emit({ type: "memory", topic: "Documents", note: `kept "${title}" in full (${text.length} characters, from ${basename(source)})` });
@@ -1047,12 +1052,15 @@ async function keepIntent(text, files, likely, given = []) {
     lastRead = { path, text: content, t: Date.now() };
     // An attached file is already in front of the model; one found in a folder is not.
     if (!files.length && !given.length) did("read_file", { path }, content);
-    if (intent.keep) {
+    if (intent.keep && memoryHeld()) did("keep_document", { title, file: path }, HELD);
+    else if (intent.keep) {
       keepDocument(title, path, content);
       did("keep_document", { title, file: path }, `Done, just now: the full text of ${basename(path)} is kept under the title "${title}".`);
     }
     if (intent.extract && CODE.test(path)) {
       did("save_document_as_memories", { file: path }, `Nothing was saved: ${basename(path)} is program source code, not something to learn facts about the user from.`);
+    } else if (intent.extract && memoryHeld()) {
+      did("save_document_as_memories", { file: path }, HELD);
     } else if (intent.extract) {
       const filed = await learnFrom(content, basename(path));
       const total = Object.values(filed).reduce((sum, notes) => sum + notes.length, 0);
@@ -1073,6 +1081,7 @@ async function keepIntent(text, files, likely, given = []) {
 // done here: what the user wants remembered is written as notes and filed, and
 // any held note it corrects, or that the user says not to keep, is taken out.
 async function rememberFacts(text) {
+  if (memoryHeld()) return;
   // The held notes nearest to what was said: those a correction may be about.
   let near = [];
   try {
@@ -1430,6 +1439,15 @@ function fail(message) {
 
 let interviewing = false;
 
+// Memory held (protocol 1.6, `memory.hold`): while a demo is shown, nothing said
+// is remembered — no notes, no documents or pictures kept, no tidying — and what
+// is known is still read. Held for some hours at most, so a demo left without
+// saying so does not leave Morgan forgetful; the client asking for it says so
+// again while it lasts. Not kept across a restart, for the same reason.
+let memoryHeldUntil = 0;
+const memoryHeld = () => Date.now() < memoryHeldUntil;
+const HELD = "Nothing was kept: Morgan's memory is held right now (a demonstration is on), so nothing new is remembered.";
+
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
 const topicPath = (name) => join(MEMORY, `${slug(name)}.topic`);
 
@@ -1646,6 +1664,7 @@ function madeByMorgan(name) {
 
 async function memoryTool(name, args, sources = null) {
   const topic = String(args.topic ?? "").trim();
+  if (memoryHeld() && (name === "remember" || name === "rewrite_topic")) return HELD;
   if (name === "end_interview") {
     interviewing = false;
     emit({ type: "interview", active: false });
@@ -1776,6 +1795,7 @@ async function sameThing(first, second) {
 }
 
 async function tend({ force = false } = {}) {
+  if (memoryHeld()) return null;
   const garden = gardenState();
   if (!force && Date.now() - (garden.last ?? 0) < DAY) return null;
   const who = cfg.userName ?? "the user";
@@ -4013,7 +4033,7 @@ function handle(line, socket) {
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
-        stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper", interviewing, mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
+        stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper", interviewing, memoryHeld: memoryHeld(), mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
       });
     case "watch":
       watchers.add(socket);
@@ -4048,6 +4068,13 @@ const admin = createAdmin({
   documents, documentPath, pictures, picturePath,
   mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
   garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
+  hold: {
+    get: () => ({ held: memoryHeld(), until: memoryHeld() ? new Date(memoryHeldUntil).toISOString() : null }),
+    set(on, hours) {
+      memoryHeldUntil = on ? Date.now() + Math.min(24, Math.max(0.1, Number(hours) || 12)) * 3600_000 : 0;
+      console.log(`memory: ${on ? `held until ${new Date(memoryHeldUntil).toISOString()}` : "kept again"}`);
+    },
+  },
   // Where this machine's Morgan lives: here, or on a server it is a client of.
   client: {
     mcpList: () => ownMcpList(),
