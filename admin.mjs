@@ -196,7 +196,16 @@ export function createAdmin(d) {
       if (!response.ok) throw new Error(`the server answered ${response.status}`);
       const models = (await response.json()).models.map((model) => ({ name: model.name, gb: Number((model.size / 1e9).toFixed(1)) }));
       const embedding = (name) => /embed|bert|bge|e5|minilm/i.test(name);
-      return { chat: models.filter((model) => !embedding(model.name)), embedding: models.filter((model) => embedding(model.name)) };
+      // Which can see, as the server says of each (its `capabilities`): the ones a Vision model is chosen from.
+      const base = (url || d.cfg.ollama.url).replace(/\/+$/, "");
+      await Promise.all(models.filter((model) => !embedding(model.name)).map(async (model) => {
+        try {
+          const r = await fetch(`${base}/api/show`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: model.name }), signal: AbortSignal.timeout(6000) });
+          const caps = r.ok ? (await r.json()).capabilities : null;
+          if (Array.isArray(caps)) model.sees = caps.includes("vision");
+        } catch { /* said nothing: not marked */ }
+      }));
+      return { chat: models.filter((model) => !embedding(model.name)), embedding: models.filter((model) => embedding(model.name)), vision: models.filter((model) => model.sees) };
     },
     "oracle.account": () => {
       const result = spawnSync("claude", ["auth", "status"], { env: oracleEnv(), encoding: "utf8" });
