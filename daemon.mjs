@@ -172,6 +172,9 @@ const defaults = {
   // it can tell what kind of question it has been asked.
   router: true,
   embedModel: BASICS.embedModel,
+  // The model that looks — the camera, the screen, the clipboard, pictures read — when it is not the chat model
+  // (one that cannot see, say). Empty: the chat model, which then has to be one that can.
+  visionModel: "",
   // Opens the chat window. Set by the daemon at runtime, so no Hyprland
   // configuration file is touched; null leaves the keyboard alone.
   hotkey: BASICS.hotkey,
@@ -226,7 +229,7 @@ const BRAIN = ROLE !== "client";
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply", "timeZone"];
+const LIVE = ["visionModel", "similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply", "timeZone"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
@@ -612,7 +615,7 @@ async function describeFrame(bytes, source, question) {
     headers: { "Content-Type": "application/json" },
     signal: AbortSignal.timeout(120_000),
     body: JSON.stringify({
-      model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+      model: visionModel(), stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
       format: { type: "object", properties: { visible: { type: "boolean" }, description: { type: "string" } }, required: ["visible", "description"] },
       messages: [{
         role: "user",
@@ -636,7 +639,7 @@ async function recognise(bytes, known) {
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
-        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+        model: visionModel(), stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
         format: { type: "object", properties: { matches: { type: "array", items: { type: "string", enum: known.map((picture) => picture.label) } } }, required: ["matches"] },
         messages: [{
           role: "user",
@@ -776,7 +779,7 @@ async function readDocument(path, question = "") {
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
-        model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
+        model: visionModel(), stream: false, think: false, keep_alive: cfg.ollama.keepAlive,
         messages: [{
           role: "user",
           content: `Describe this picture fully${question ? `, with this question in mind: "${question}"` : ""}. Quote exactly any text in it. Plain prose.`,
@@ -1438,6 +1441,45 @@ function fail(message) {
 // `heymorgan settings` shows what is remembered.
 
 let interviewing = false;
+
+/** The model that looks: the Vision model setting, else the chat model. */
+const visionModel = () => cfg.visionModel || cfg.ollama.model;
+
+/** Whether a model on the server can take pictures, as Ollama says of it (`capabilities`); null if it cannot be asked. */
+async function sees(model) {
+  try {
+    const response = await fetch(`${cfg.ollama.url}/api/show`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }), signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return null;
+    const caps = (await response.json()).capabilities;
+    return Array.isArray(caps) ? caps.includes("vision") : null;
+  } catch { return null; }
+}
+
+/**
+ * A picture described for whoever asked (protocol 1.7, `describe`): what it
+ * is, what it shows, and any text in it word for word — by the model that
+ * looks. Nothing is said, kept, remembered or recorded: Talaris reads files
+ * this way, to find them by what they show.
+ */
+async function describePicture(base64, question) {
+  if (!base64) throw new Error("describe wants a picture");
+  const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(180_000),
+    body: JSON.stringify({
+      model: visionModel(), stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+      messages: [{
+        role: "user",
+        content: "Describe this picture for someone looking for it among their files: what kind of picture it is, and what it shows — "
+          + "people, places, things, what is happening. Quote exactly any text in it, handwriting too. A few sentences of plain prose, no lists."
+          + (question ? ` Bear this in mind: ${question}` : ""),
+        images: [base64],
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}${response.status === 400 ? ` — ${visionModel()} may not take pictures` : ""}`);
+  return String((await response.json()).message?.content ?? "").trim();
+}
 
 // Memory held (protocol 1.6, `memory.hold`): while a demo is shown, nothing said
 // is remembered — no notes, no documents or pictures kept, no tidying — and what
@@ -4024,6 +4066,14 @@ function handle(line, socket) {
       admin(String(request.op), request.args ?? {}).then(reply);
       return;
     }
+    case "describe": {
+      // A picture described, quietly: { image (base64), question? } in, { ok, text } out. Nothing recorded.
+      let request;
+      try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "describe wants JSON: { image, question }" }); }
+      describePicture(String(request.image ?? ""), request.question ? String(request.question) : "")
+        .then((text) => reply({ ok: true, text, model: visionModel() }), (error) => reply({ ok: false, error: error.message }));
+      return;
+    }
     case "tools":
       return reply({ ok: true, calls: toolLog });
     case "threads":
@@ -4068,6 +4118,12 @@ const admin = createAdmin({
   documents, documentPath, pictures, picturePath,
   mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
   garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
+  // Which models can see: the chat model, and the one that looks (protocol 1.7, `vision.check`).
+  vision: async () => {
+    const chat = cfg.ollama.model, vision = visionModel();
+    const [chatSees, visionSees] = await Promise.all([sees(chat), vision === chat ? null : sees(vision)]);
+    return { chat, chatSees, vision, chosen: Boolean(cfg.visionModel), visionSees: vision === chat ? chatSees : visionSees };
+  },
   hold: {
     get: () => ({ held: memoryHeld(), until: memoryHeld() ? new Date(memoryHeldUntil).toISOString() : null }),
     set(on, hours) {

@@ -5,6 +5,11 @@
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.7** (2026-10-26): `describe <json>` — a picture described quietly, for
+  a client that reads files (nothing said, kept or recorded); `visionModel` in
+  `config.get` and `config.set` — the model that looks, everywhere Morgan does
+  (camera, screen, clipboard, pictures read), empty for the chat model; and
+  `vision.check`, which says whether each can see.
 - **1.6** (2026-10-26): `memory.hold` — while a demo is shown, nothing new is
   remembered (no notes, documents or pictures kept, no tidying), for some hours
   at most and not across a restart; `memory.hold.get`, and `memoryHeld` in
@@ -224,6 +229,7 @@ conversation that was nothing else); `recent` and `threads` do not.
 |---|---|
 | `reminders` | `{ ok, reminders: [{ id, at, text, made, when }] }`, soonest first. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
 | `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. A client daemon adds `role: "client"` and `server`, and answers `stt`, `tts`, `wakeWord`, `wakeEngine`, `voice` and `engine` for itself (§5). |
+| `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model }`, or `{ ok: false, error }` |
 | `admin <json>` | `{ "op": "…", "args": { … } }`: see §4. |
 | `access add <device>` \| `access list` \| `access remove <device>` | On a server only (§6). `add`: `{ ok, name, key }`, the key shown this once. `list`: `{ ok, keys: [{ name, made, used }] }`. `remove`: `{ ok }`, or `{ ok: false, error: "no key for <device>" }`; a removed key's connection is closed at once. Anywhere else: `{ ok: false, error: "only a server issues access keys" }`. |
 | `watch` | No reply: the connection becomes an event stream (§3). |
@@ -331,6 +337,7 @@ given. A key must start `hc_`. It always restarts the daemon.
 | `memory.document.delete` | `title` | — |
 | `memory.picture.view` | `label` | `path`: a JPEG written to `$XDG_RUNTIME_DIR`, deleted after two minutes; `data`: the same picture, base64 |
 | `memory.picture.delete` | `label` | — |
+| `vision.check` | — | `chat`, `chatSees`, `vision`, `chosen`, `visionSees`: the chat model and the one that looks, each `true`/`false` for whether it takes pictures (Ollama's `capabilities`), `null` if the server could not say |
 | `memory.hold` | `on` (default true), `hours` (default 12, at most 24) | `held`, `until`: nothing new is remembered until then, or until `on: false`. Held only in memory: a restart lets go |
 | `memory.hold.get` | — | `held`, `until` |
 | `memory.garden.report` | — | `days`: what the gardener changed, day by day |

@@ -245,6 +245,7 @@ async function ollamaMenu() {
       { key: "url", label: "Server", value: ollama().url },
       { key: "model", label: "Model", value: ollama().model },
       { key: "embed", label: "Embedding model", value: config.embedModel ?? BASICS.embedModel },
+      { key: "vision", label: "Vision model", value: config.visionModel || "the chat model" },
       { key: "test", label: "Test" },
     ]);
     if (!choice) return;
@@ -287,6 +288,30 @@ async function ollamaMenu() {
         save();
         console.log(`${model} it is (${size} numbers per passage). Every past exchange is re-read with it when the assistant restarts.`);
         console.log("A different model scores differently, so automatic recall may bring back too much or too little until the threshold is retuned.");
+      } catch (error) {
+        console.log(`Could not list models: ${error.message}`);
+      }
+    } else if (choice === "vision") {
+      // The model that looks: the chat model, or one of its own. Each says whether it can see, as Ollama does.
+      try {
+        const models = await ollamaModels(ollama().url);
+        const sees = async (model) => {
+          const r = await fetch(`${ollama().url}/api/show`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(10_000) }).catch(() => null);
+          const caps = r && r.ok ? (await r.json()).capabilities : null;
+          return Array.isArray(caps) ? caps.includes("vision") : null;
+        };
+        const marks = await Promise.all(models.map((entry) => sees(entry.name)));
+        const chatSees = await sees(ollama().model);
+        const picked = await menu("Vision model", [
+          { key: "", label: "The chat model", value: chatSees === false ? `${ollama().model} cannot see` : ollama().model },
+          ...models.map((entry, i) => ({ key: entry.name, label: entry.name, value: marks[i] === true ? "sees" : marks[i] === false ? "cannot see" : "" })),
+        ]);
+        if (picked === null || picked === undefined) continue;
+        if (picked && marks[models.findIndex((entry) => entry.name === picked)] === false && !(await yes(`${picked} cannot see. Use it anyway?`))) continue;
+        config.visionModel = picked || undefined;
+        if (!picked) delete config.visionModel;
+        save();
+        if (!picked && chatSees === false) console.log(`Note: ${ollama().model} cannot see, so looking and describing pictures will fail until a vision model is chosen.`);
       } catch (error) {
         console.log(`Could not list models: ${error.message}`);
       }

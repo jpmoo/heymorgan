@@ -49,7 +49,7 @@ export function createAdmin(d) {
     // ------------------------------------------------------------ settings
     "config.get": async () => ({
       name: d.cfg.name, userName: d.cfg.userName, style: d.cfg.style,
-      ollama: { url: d.cfg.ollama.url, model: d.cfg.ollama.model }, embedModel: d.cfg.embedModel,
+      ollama: { url: d.cfg.ollama.url, model: d.cfg.ollama.model }, embedModel: d.cfg.embedModel, visionModel: d.cfg.visionModel ?? "",
       oracleModel: d.cfg.oracle.model,
       // Read where the Oracle runs: on a client, config.get is answered by the server.
       oracleAccount: await oracleAccount(d.cfg.oracle?.claude),
@@ -103,6 +103,8 @@ export function createAdmin(d) {
     // Held while a demo is shown (protocol 1.6): nothing new remembered, for some hours at most.
     "memory.hold": ({ on = true, hours = 12 }) => { d.hold.set(on !== false, hours); return d.hold.get(); },
     "memory.hold.get": () => d.hold.get(),
+    // Which models can see: the chat model, and the one that looks (the Vision model, else the chat model).
+    "vision.check": () => d.vision(),
     "memory.garden.report": () => ({ days: d.garden.report() }),
     "memory.garden.undo": ({ id }) => d.garden.undo(String(id)),
     "memory.garden.run": async () => ({ changes: (await d.garden.run())?.actions.length ?? 0, days: d.garden.report() }),
