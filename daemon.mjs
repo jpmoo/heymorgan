@@ -1457,6 +1457,30 @@ async function sees(model) {
 }
 
 /**
+ * A file's words described (protocol 1.7, `describe` with `text`): in two or
+ * three sentences, what the file is and what it is about, naming the people,
+ * places and projects in it — by the chat model. For Talaris, which shows it
+ * and finds the file by it. Nothing said, kept, remembered or recorded.
+ */
+async function describeText(text, name) {
+  const words = text.trim().slice(0, 12_000);
+  if (!words) return "";
+  const response = await fetch(`${cfg.ollama.url}/api/chat`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(180_000),
+    body: JSON.stringify({
+      model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
+      messages: [{
+        role: "user",
+        content: `Here is what a file${name ? ` called "${name}"` : ""} says. In two or three sentences of plain prose, say what kind of file it is and `
+          + "what it is about, naming the people, places, organizations and projects it is about. No preamble, no lists.\n\n" + words,
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}`);
+  return String((await response.json()).message?.content ?? "").trim();
+}
+
+/**
  * A picture described for whoever asked (protocol 1.7, `describe`): what it
  * is, what it shows, and any text in it word for word — by the model that
  * looks. Nothing is said, kept, remembered or recorded: Talaris reads files
@@ -4067,11 +4091,14 @@ function handle(line, socket) {
       return;
     }
     case "describe": {
-      // A picture described, quietly: { image (base64), question? } in, { ok, text } out. Nothing recorded.
+      // A picture described, or a file's words, quietly: { image (base64), question? } or { text, name? } in,
+      // { ok, text } out. Nothing said, kept, remembered or recorded.
       let request;
-      try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "describe wants JSON: { image, question }" }); }
-      describePicture(String(request.image ?? ""), request.question ? String(request.question) : "")
-        .then((text) => reply({ ok: true, text, model: visionModel() }), (error) => reply({ ok: false, error: error.message }));
+      try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "describe wants JSON: { image } or { text }" }); }
+      const asked = request.text !== undefined
+        ? describeText(String(request.text), request.name ? String(request.name) : "").then((text) => ({ text, model: cfg.ollama.model }))
+        : describePicture(String(request.image ?? ""), request.question ? String(request.question) : "").then((text) => ({ text, model: visionModel() }));
+      asked.then((r) => reply({ ok: true, ...r }), (error) => reply({ ok: false, error: error.message }));
       return;
     }
     case "tools":
