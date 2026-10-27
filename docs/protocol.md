@@ -1,10 +1,16 @@
 # Morgan's client protocol
 
-**Version 1.9**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.10**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.10** (2026-10-27): `reminders` (and `reminders.list`, `reminders.cancel`)
+  say `now`, the clock `at` and `made` are on. A client counting a timer down
+  on its own clock was off by as much as the two clocks differ (14 seconds,
+  found with a server's clock running fast); it counts from `at - now` instead.
+  A `reminder` event with `cancelled: true` says one was cancelled, so a
+  window showing it can let it go; before, only the window that cancelled it knew.
 - **1.9** (2026-10-27): `describe` with `"what": "project"` — the text is
   a project's tasks, done and to do, and the answer is the project's own description; the
   reply says `what` back, so a client can tell an older Morgan, which takes
@@ -234,7 +240,7 @@ conversation that was nothing else); `recent` and `threads` do not.
 
 | Command | Reply |
 |---|---|
-| `reminders` | `{ ok, reminders: [{ id, at, text, made, when }] }`, soonest first. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
+| `reminders` | `{ ok, now, reminders: [{ id, at, text, made, when }] }`, soonest first. `now` (1.10) is the answering machine's clock, which `at` and `made` are on: time left is `at - now`, not `at` less a client's own clock. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
 | `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. A client daemon adds `role: "client"` and `server`, and answers `stt`, `tts`, `wakeWord`, `wakeEngine`, `voice` and `engine` for itself (§5). |
 | `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Or `{ "text": "…", "name"?: "…", "what"?: "file" \| "project" }`: a file's words described in two or three sentences by the chat model — what it is and what it is about; with `"what": "project"`, a project's tasks, done and to do, described as what the project is for and covers (1.9). Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model, what }` (`what` from 1.9), or `{ ok: false, error }` |
 | `admin <json>` | `{ "op": "…", "args": { … } }`: see §4. |
@@ -270,6 +276,7 @@ missed while not connected is gone (use `recent` to catch up on the record).
 | `memory` | `topic`, `note`; or `topic`, `note`, `corrected: true`; or `topic`, `note`, `removed: true`; or `topic`, `rewritten: true`, `notes`, `body` | A note was kept, corrected in place, taken out, or a topic reorganized. A document or picture kept is a `memory` event under the topic `Documents` or `Pictures`. |
 | `confirm` | `name`, `args`; later `name`, `done: true \| false` | A change was proposed (and waits for a yes); then carried out (`done: true`) or dropped (`done: false`). A change agreed to in advance comes as both at once. |
 | `reminder` | `set: true`, `text`, `when` | A reminder or timer was set or changed. |
+| `reminder` | `cancelled: true`, `id`, `text` (1.10) | A reminder or timer was cancelled, by voice or by `reminders.cancel`. One without `set` or `cancelled` is one going off. |
 | `reminder` | `text`, `late` | A reminder went off. An `assistant` event and speech follow. |
 | `rated` | `t`, `vote` | An exchange was rated (`vote` as sent: `up`, `down` or anything else for none). |
 | `review` | `t`, `notes: [{ topic, note }]` | Notes in memory that may have come from a hidden exchange, for the user to keep or delete with `settle`. Sent after a thumbs down and after each `settle`. |

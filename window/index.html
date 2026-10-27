@@ -356,7 +356,10 @@ function hear(line) {
       else act(e.done ? "circle-check" : "circle-x", `${e.done ? "Done" : "Not done"}: ${title.toLowerCase()}`, "");
       break;
     }
-    case "reminder": act(e.set ? "bell" : "bell-ringing", e.set ? (e.text ? `Reminder set: ${e.text}` : "Timer set") : "Reminder", e.set ? String(e.when ?? "") : String(e.text ?? "")); break;
+    case "reminder":
+      if (e.cancelled) act("bell-off", e.text ? `Reminder cancelled: ${e.text}` : "Timer cancelled", "");
+      else act(e.set ? "bell" : "bell-ringing", e.set ? (e.text ? `Reminder set: ${e.text}` : "Timer set") : "Reminder", e.set ? String(e.when ?? "") : String(e.text ?? ""));
+      break;
     case "error": act("alert-triangle", "Something went wrong", e.message); break;
     case "continuing": {
       // The earlier conversation showing is carried on: no way "back", and a line where today begins.

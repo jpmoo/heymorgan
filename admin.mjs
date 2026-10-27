@@ -163,8 +163,8 @@ export function createAdmin(d) {
     "memory.picture.delete": ({ label }) => { rmSync(d.picturePath(label), { force: true }); return {}; },
 
     // ------------------------------------------------------------ reminders
-    "reminders.list": () => ({ reminders: d.reminders.list() }),
-    "reminders.cancel": ({ id }) => { d.reminders.cancel(id); return { reminders: d.reminders.list() }; },
+    "reminders.list": () => ({ now: Date.now(), reminders: d.reminders.list() }),
+    "reminders.cancel": ({ id }) => { d.reminders.cancel(id); return { now: Date.now(), reminders: d.reminders.list() }; },
 
     // ------------------------------------------------------------ voice out
     "voice.list": () => ({

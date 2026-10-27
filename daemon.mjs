@@ -927,6 +927,7 @@ async function reminderIntent(text, likely) {
     due = due.filter((entry) => !gone.includes(entry));
     reminders.save(due);
     reminderActed = true;
+    for (const entry of gone) emit({ type: "reminder", cancelled: true, id: entry.id, text: entry.text });
     return did("cancel_reminder", { which: intent.all ? "all" : intent.text }, `Cancelled, just now: ${gone.map((entry) => entry.text || "the timer").join("; ")}.`);
   }
   if (intent.action === "change") {
@@ -1413,7 +1414,7 @@ function emit(event) {
   // What the user and Morgan say carries the moment it was said.
   if (event.type === "user" || event.type === "assistant") event = { ...event, at: Date.now(), when: stamp(Date.now()) };
   // A reminder going off is not a step in anyone's turn, and is not to go off again when replayed.
-  if (STEPS.has(event.type) && !(event.type === "reminder" && !event.set) && steps.length < 40) {
+  if (STEPS.has(event.type) && !(event.type === "reminder" && !event.set && !event.cancelled) && steps.length < 40) {
     steps.push(typeof event.body === "string" || typeof event.text === "string"
       ? { ...event, ...(typeof event.body === "string" ? { body: event.body.slice(0, 2000) } : {}), ...(typeof event.text === "string" ? { text: event.text.slice(0, 2000) } : {}) }
       : event);
@@ -4135,7 +4136,8 @@ function handle(line, socket) {
       // a client holding an old id finds where it went by the thread now holding the old one's first exchange.
       return reply({ ok: true, threads: transcript.threads.map(({ id, t0, t1, title, summary, ts, live }) => ({ id, t0, t1, title, summary, exchanges: ts.length, ts, live: Boolean(live) })) });
     case "reminders":
-      return reply({ ok: true, reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
+      // `now` is this machine's clock: `at` and `made` are on it, and a client's own clock may not agree (protocol 1.10).
+      return reply({ ok: true, now: Date.now(), reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
@@ -4207,7 +4209,13 @@ const admin = createAdmin({
   },
   reminders: {
     list: () => [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })),
-    cancel: (id) => { due = due.filter((entry) => entry.id !== id); reminders.save(due); },
+    // Said on the stream as one cancelled by voice is, so every window showing it lets it go at once.
+    cancel: (id) => {
+      const gone = due.filter((entry) => entry.id === id);
+      due = due.filter((entry) => entry.id !== id);
+      reminders.save(due);
+      for (const entry of gone) emit({ type: "reminder", cancelled: true, id: entry.id, text: entry.text });
+    },
   },
   // Settings the running daemon cannot simply pick up: start again, once the answer has gone.
   // A server's service restarts it when it exits (Restart=always).
@@ -4568,8 +4576,8 @@ function fromHome(event) {
       return;
     case "reminder":
       emit(event);
-      // A reminder going off is said aloud by every client that can speak.
-      if (!event.set && cfg.tts) { ownSpoken = true; spokenTurn = true; quiet = false; }
+      // A reminder going off is said aloud by every client that can speak (one set, changed or cancelled is not).
+      if (!event.set && !event.cancelled && cfg.tts) { ownSpoken = true; spokenTurn = true; quiet = false; }
       return;
     case "level":
       return; // the server has no voice of its own to measure
