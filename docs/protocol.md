@@ -1,10 +1,13 @@
 # Morgan's client protocol
 
-**Version 1.5**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.8**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.8** (2026-10-27): `threads` gives each thread's `id`, `t1` and `ts`
+  (its exchanges' times), so a client can keep hold of a thread, and find where
+  one went when it was merged into another.
 - **1.7** (2026-10-26): `describe <json>` — a picture described quietly, for
   a client that reads files (nothing said, kept or recorded); `visionModel` in
   `config.get` and `config.set` — the model that looks, everywhere Morgan does
@@ -175,7 +178,7 @@ uses this `t`.
 | `days [YYYY-MM]` | The month's conversations, for a calendar (default: this month). `{ ok, key: "YYYY-MM", name: "October 2026", first, length, today, days }`: `first` is the weekday of the 1st (0 is Sunday), `length` the number of days, `today` is `YYYY-MM-DD`, and `days` maps `YYYY-MM-DD` to `[{ id, t0, t1, title, exchanges, clock }]`, earliest first. A malformed month: `{ ok: false, error: "days wants a month: YYYY-MM" }`. |
 | `search <text>` | `{ ok, query, results: [{ id, t0, title, summary, when, score, said }] }`: up to eight past conversations, best first, ranked by meaning (the query embedded on the server, with the exchanges' own model) plus a little for shared words; none scoring under 0.5. `said` is what you said in the exchange that bears on it most. `id` is for `conversation <id>`. On a client it is answered by the server. |
 | `conversation <id>` | `{ ok, id, t0, title, when, items: [exchange…], earlier, later, similar }`. `earlier` are conversations this one carried on from, `later` those that carried it on, `similar` up to 50 others by likeness (each with a `score`); all three are `[{ id, t0, title, when }]`. `{ ok: false, error: "no such conversation" }` if there is none. |
-| `threads` | `{ ok, threads: [{ t0, title, summary, exchanges, live }] }`: every thread the transcript has been cut into, as stored. |
+| `threads` | `{ ok, threads: [{ id, t0, t1, title, summary, exchanges, ts, live }] }`: every thread the transcript has been cut into, as stored. `id` is for `conversation <id>`; `ts` are its exchanges' `t`. A thread's id is its first exchange's `t`, a dash and a number; when two threads are merged one id goes, and the thread kept holds its exchanges — so an id that has gone is found again as the thread whose `ts` holds the number before its dash. |
 | `log [n]` | `{ ok, lines: [{ t, level, text }] }`: the last `n` lines Morgan logged (default 100; at most 500 are kept). `level` is `info`, `warn` or `error`, guessed from the wording. |
 | `tools` | `{ ok, calls: [{ t, name, args, result }] }`: MCP tool calls since the daemon started, `result` cut to 400 characters. |
 

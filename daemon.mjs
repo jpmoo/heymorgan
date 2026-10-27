@@ -4104,7 +4104,9 @@ function handle(line, socket) {
     case "tools":
       return reply({ ok: true, calls: toolLog });
     case "threads":
-      return reply({ ok: true, threads: transcript.threads.map(({ t0, title, summary, ts, live }) => ({ t0, title, summary, exchanges: ts.length, live: Boolean(live) })) });
+      // Each with its id (for `conversation`) and its exchanges' times: a thread merged into another keeps its exchanges, so
+      // a client holding an old id finds where it went by the thread now holding the old one's first exchange.
+      return reply({ ok: true, threads: transcript.threads.map(({ id, t0, t1, title, summary, ts, live }) => ({ id, t0, t1, title, summary, exchanges: ts.length, ts, live: Boolean(live) })) });
     case "reminders":
       return reply({ ok: true, reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
     case "status":
