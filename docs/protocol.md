@@ -1,10 +1,14 @@
 # Morgan's client protocol
 
-**Version 1.8**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.9**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.9** (2026-10-27): `describe` with `"what": "project"` — the text is
+  a project's tasks, done and to do, and the answer is the project's own description; the
+  reply says `what` back, so a client can tell an older Morgan, which takes
+  everything for a file.
 - **1.8** (2026-10-27): `threads` gives each thread's `id`, `t1` and `ts`
   (its exchanges' times), so a client can keep hold of a thread, and find where
   one went when it was merged into another.
@@ -232,7 +236,7 @@ conversation that was nothing else); `recent` and `threads` do not.
 |---|---|
 | `reminders` | `{ ok, reminders: [{ id, at, text, made, when }] }`, soonest first. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
 | `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. A client daemon adds `role: "client"` and `server`, and answers `stt`, `tts`, `wakeWord`, `wakeEngine`, `voice` and `engine` for itself (§5). |
-| `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Or `{ "text": "…", "name"?: "…" }`: a file's words described in two or three sentences by the chat model — what it is and what it is about. Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model }`, or `{ ok: false, error }` |
+| `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Or `{ "text": "…", "name"?: "…", "what"?: "file" \| "project" }`: a file's words described in two or three sentences by the chat model — what it is and what it is about; with `"what": "project"`, a project's tasks, done and to do, described as what the project is for and covers (1.9). Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model, what }` (`what` from 1.9), or `{ ok: false, error }` |
 | `admin <json>` | `{ "op": "…", "args": { … } }`: see §4. |
 | `access add <device>` \| `access list` \| `access remove <device>` | On a server only (§6). `add`: `{ ok, name, key }`, the key shown this once. `list`: `{ ok, keys: [{ name, made, used }] }`. `remove`: `{ ok }`, or `{ ok: false, error: "no key for <device>" }`; a removed key's connection is closed at once. Anywhere else: `{ ok: false, error: "only a server issues access keys" }`. |
 | `watch` | No reply: the connection becomes an event stream (§3). |

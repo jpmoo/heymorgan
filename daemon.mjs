@@ -1462,17 +1462,23 @@ async function sees(model) {
  * places and projects in it — by the chat model. For Talaris, which shows it
  * and finds the file by it. Nothing said, kept, remembered or recorded.
  */
-async function describeText(text, name) {
+async function describeText(text, name, what = "file") {
   const words = text.trim().slice(0, 12_000);
   if (!words) return "";
+  // A project (1.9): told its tasks, done and still to do, each with its notes.
+  const ask = what === "project"
+    ? `Here are the tasks of a project${name ? ` called "${name}"` : ""}, those done and those still to do. In two or three sentences of plain `
+      + "prose, say what the project is for and what it covers, naming the people, places and organizations it involves. Write it as the "
+      + "project's own description: no preamble, no lists, and do not mention the tasks as such.\n\n"
+    : `Here is what a file${name ? ` called "${name}"` : ""} says. In two or three sentences of plain prose, say what kind of file it is and `
+      + "what it is about, naming the people, places, organizations and projects it is about. No preamble, no lists.\n\n";
   const response = await fetch(`${cfg.ollama.url}/api/chat`, {
     method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(180_000),
     body: JSON.stringify({
       model: cfg.ollama.model, stream: false, think: false, keep_alive: cfg.ollama.keepAlive, options: { temperature: 0 },
       messages: [{
         role: "user",
-        content: `Here is what a file${name ? ` called "${name}"` : ""} says. In two or three sentences of plain prose, say what kind of file it is and `
-          + "what it is about, naming the people, places, organizations and projects it is about. No preamble, no lists.\n\n" + words,
+        content: ask + words,
       }],
     }),
   });
@@ -4091,12 +4097,13 @@ function handle(line, socket) {
       return;
     }
     case "describe": {
-      // A picture described, or a file's words, quietly: { image (base64), question? } or { text, name? } in,
-      // { ok, text } out. Nothing said, kept, remembered or recorded.
+      // A picture described, or a file's words, quietly: { image (base64), question? } or { text, name?, what? } in,
+      // { ok, text } out — with `what` said back, so a client knows it was understood. Nothing said, kept, remembered or recorded.
       let request;
       try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "describe wants JSON: { image } or { text }" }); }
       const asked = request.text !== undefined
-        ? describeText(String(request.text), request.name ? String(request.name) : "").then((text) => ({ text, model: cfg.ollama.model }))
+        ? describeText(String(request.text), request.name ? String(request.name) : "", request.what === "project" ? "project" : "file")
+          .then((text) => ({ text, model: cfg.ollama.model, what: request.what === "project" ? "project" : "file" }))
         : describePicture(String(request.image ?? ""), request.question ? String(request.question) : "").then((text) => ({ text, model: visionModel() }));
       asked.then((r) => reply({ ok: true, ...r }), (error) => reply({ ok: false, error: error.message }));
       return;
