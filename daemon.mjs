@@ -849,11 +849,17 @@ const reminderList = () => (due.length
   : "There are none.");
 
 let reminderTalk = 0; // when reminders were last the subject, so "cancel the one about the dentist" is understood
+// The words that name one outright. The sorting step missed "set a timer for 2 min 45 seconds" (2026-10-27), and the
+// chat model, with nothing done, said "Timer set": so naming one is enough to be asked, whatever the sorting said.
+const TIMER_WORDS = /\b(timers?|remind(ers?|ing)?|alarms?|snooze)\b/i;
+// Whether the turn's message did set, list, change or cancel one — done, not only meant — so an answer cannot claim it.
+let reminderActed = false;
 
 async function reminderIntent(text, likely) {
+  reminderActed = false;
   // While reminders are the subject, what is said next is taken to be about them too.
   const following = due.length > 0 && Date.now() - reminderTalk < 3 * 60_000;
-  if (!likely && !following) return;
+  if (!likely && !following && !TIMER_WORDS.test(text)) return;
   let intent;
   try {
     const response = await fetch(`${cfg.ollama.url}/api/chat`, {
@@ -882,7 +888,8 @@ async function reminderIntent(text, likely) {
             + "any dates yourself. action: set to make a timer or reminder (snoozing one is setting it again); list to hear what is "
             + "set; cancel to remove one or all; change to move one that is already set to a different time; none if the message is not asking "
             + "for any of that. For set and change: kind is relative when "
-            + "they give a length of time from now (in ten minutes, in two hours), with amount and unit; kind is absolute when they "
+            + "they give a length of time from now (in ten minutes, in two hours), with amount and unit — a length in two units "
+            + "(2 minutes 45 seconds, an hour and a half) as one amount of the smaller unit (165 seconds, 90 minutes); kind is absolute when they "
             + "give a clock time or a day, with time as 24-hour HH:MM (empty if none was said) and day as today, tomorrow, a weekday "
             + "name, a date as YYYY-MM-DD, or empty if no day was said. text: what to remind them of, as a short phrase addressed "
             + "to them (take the bread out, ring the dentist); empty for a plain timer. For cancel and change: text is which one, in their words, "
@@ -897,10 +904,15 @@ async function reminderIntent(text, likely) {
     console.error(`reminders: ${error.message}`);
     return;
   }
+  // Written down, so a timer asked for and not set can be traced to how it was read.
+  console.log(`reminders: "${text.slice(0, 80)}" read as ${JSON.stringify(intent)}`);
   if (intent.action === "none") return;
   reminderTalk = Date.now();
   fresh = true; // not something to file away as a memory
-  if (intent.action === "list") return did("list_reminders", {}, reminderList());
+  if (intent.action === "list") {
+    reminderActed = true;
+    return did("list_reminders", {}, reminderList());
+  }
   // Which reminder their words point at: the one sharing most of the words
   // that carry meaning; or, when they name none, the only one there is.
   const FILLER = new Set(["the", "one", "about", "that", "this", "for", "to", "my", "me", "a", "an", "of", "it", "reminder", "reminders", "timer", "alarm", "please"]);
@@ -914,6 +926,7 @@ async function reminderIntent(text, likely) {
     if (!gone.length) return did("cancel_reminder", { which: intent.text }, `Nothing was cancelled: it was not clear which one is meant. Set at present:\n${reminderList()}`);
     due = due.filter((entry) => !gone.includes(entry));
     reminders.save(due);
+    reminderActed = true;
     return did("cancel_reminder", { which: intent.all ? "all" : intent.text }, `Cancelled, just now: ${gone.map((entry) => entry.text || "the timer").join("; ")}.`);
   }
   if (intent.action === "change") {
@@ -931,6 +944,7 @@ async function reminderIntent(text, likely) {
       }
       meant.at = at;
       reminders.save(due);
+      reminderActed = true;
       emit({ type: "reminder", set: true, text: meant.text, when: reminders.when(at) });
       return did("change_reminder", { which: intent.text }, `Changed, just now: ${meant.text || "the timer"} is now ${reminders.when(at)}. Tell the user exactly that time.`);
     } catch (error) {
@@ -943,6 +957,7 @@ async function reminderIntent(text, likely) {
     const at = reminders.resolve(asked);
     due.push({ id: randomUUID().slice(0, 8), at, text: what, made: Date.now() });
     reminders.save(due);
+    reminderActed = true;
     emit({ type: "reminder", set: true, text: what, when: reminders.when(at) });
     did("set_reminder", { ...asked, text: what }, `Set, just now: ${what ? `a reminder to ${what}` : "a timer"}, ${reminders.when(at)}. Tell the user exactly that time, so they can catch a mistake.`);
   } catch (error) {
@@ -2843,6 +2858,11 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     }
     await reminderIntent(text, sorted.reminder);
     if (mine !== turn) return;
+    // About timers or reminders and nothing done: said so, so the answer cannot claim it was.
+    if (!reminderActed && (sorted.reminder || TIMER_WORDS.test(text))) {
+      seen += " No timer or reminder was set, changed or cancelled for this message. Never say one was; if they asked for one,"
+        + " say it was not set, and ask them to say it again with how long or when.";
+    }
     documentTurn = false;
     seen += await keepIntent(text, files, sorted.keep, given);
     if (mine !== turn) return;

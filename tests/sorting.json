@@ -384,6 +384,18 @@
   }
  },
  {
+  "say": "set a timer for 2 min 45 seconds",
+  "want": {
+   "source": "self",
+   "follows": false,
+   "sum": false,
+   "oracle": false,
+   "reminder": true,
+   "look": false,
+   "earlier": false
+  }
+ },
+ {
   "say": "Remind me to take the bins out at seven.",
   "want": {
    "source": "self",
