@@ -2325,6 +2325,13 @@ const transcript = new Transcript({
 });
 
 let history = []; // user, assistant and tool messages, without the system prompt
+// Talaris's record of what the user does (its activity tools, through its MCP)
+// never reaches the Oracle: once Morgan has read it in a conversation, the
+// Oracle is not consulted again until the next one — the Oracle is sent the
+// conversation so far, and Morgan's replies would carry what it read.
+let privateTurns = false;
+const PRIVATE_TOOLS = /__(work_patterns|work_log)$/;
+const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record from Talaris, which stays with you and never goes to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
@@ -2822,7 +2829,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // Other facts about the world go to it too, unless the router is switched off.
     const kind = current || sorted.oracle ? "current"
       : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length ? "world" : null;
-    if (kind === "current" || kind === "world") {
+    if ((kind === "current" || kind === "world") && privateTurns) {
+      did("consult_oracle", { question: text }, PRIVATE_REFUSAL);
+    } else if (kind === "current" || kind === "world") {
       setState("consulting");
       let answer = "";
       if (kind === "world") {
@@ -3030,6 +3039,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         if (call.function.name.includes("__")) {
           result = await mcpTool(call.function.name, call.function.arguments ?? {});
           if (mine !== turn) return;
+          if (PRIVATE_TOOLS.test(call.function.name)) privateTurns = true;
           // What came back, to open under the tool's card. Not for a change, whose "result" is the proposal put to the model.
           if (!changes.has(call.function.name)) emit({ type: "result", text: String(result).slice(0, 4000) });
         } else if (call.function.name === "remember_picture") {
@@ -3066,6 +3076,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
             + "something to remember about the user. Only what they tell you about themselves is.";
         } else if (call.function.name !== "consult_oracle") {
           result = await memoryTool(call.function.name, call.function.arguments ?? {});
+        } else if (privateTurns) {
+          result = PRIVATE_REFUSAL;
         } else {
           if (!spoke) enqueue(cfg.consultLine);
           setState("consulting");
@@ -3183,6 +3195,7 @@ function reset() {
   seen = "";
   proposals = [];
   history = [];
+  privateTurns = false;
   interviewing = false;
   oracles.full.stop(); // each conversation is new to the Oracle too
   oracles.quick.stop({ unused: false });
@@ -3361,6 +3374,8 @@ function stopOracle() {
 // `quick`: the smaller model, from what it knows. It answers SEARCH when the
 // question wants looking up, and the caller then asks the full one.
 function consultOracle(question, quick = false) {
+  // The last guard: whatever asked, a conversation that has read the activity record is not sent.
+  if (privateTurns) return Promise.resolve("The Oracle was not asked: this conversation holds the user's activity record, which stays with Morgan.");
   // The Oracle gets the conversation so far: the question alone often leans
   // on something said earlier.
   const recent = history
