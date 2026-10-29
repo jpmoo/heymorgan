@@ -14,15 +14,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=jpmoore
-WorkingDirectory=/home/jpmoore/heymorgan
-ExecStart=/usr/bin/node /home/jpmoore/heymorgan/daemon.mjs
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/heymorgan
+ExecStart=/usr/bin/node /home/YOUR_USER/heymorgan/daemon.mjs
 # Saving some settings asks for a restart, which it does by exiting.
 Restart=always
 RestartSec=3
 Environment=NODE_ENV=production
 # `claude` (the Oracle) and anything installed for the account.
-Environment=PATH=/home/jpmoore/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/YOUR_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 NoNewPrivileges=true
 PrivateTmp=true
@@ -30,7 +30,7 @@ ProtectSystem=full
 # The parents of its folders, not the folders: the first start after the
 # rename moves ~/.config/heyclaude and ~/.local/share/heyclaude to heymorgan.
 # A "-" lets it start where one of them is missing.
-ReadWritePaths=/home/jpmoore/heymorgan -/home/jpmoore/.config -/home/jpmoore/.local/share
+ReadWritePaths=/home/YOUR_USER/heymorgan -/home/YOUR_USER/.config -/home/YOUR_USER/.local/share
 
 [Install]
 WantedBy=multi-user.target

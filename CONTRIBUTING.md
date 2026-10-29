@@ -6,14 +6,28 @@ other terms, including commercial ones — the same arrangement as Talaris, the
 desktop shell Morgan is built into, so the two products are offered the same
 way.
 
-**Before a contribution can be accepted, its author has to agree to the
-Contributor License Agreement in `CLA.md`.** You keep the copyright in what you
+## Forks are welcome; code contributions are not taken yet
+
+Under the GPL you may fork Morgan, run it, change it and use your version as
+you like, without asking. If you distribute your version to others, it stays
+under the GPL, with its source available and these notices kept.
+
+**Code contributions to this repository are not being accepted yet.** The
+Contributor License Agreement below is a draft that has not been reviewed by a
+lawyer, and no contribution is taken under a draft. Issues, bug reports and
+suggestions are welcome now. Once the agreement has been reviewed, this section
+will say so.
+
+## The Contributor License Agreement
+
+**Once contributions open, each contributor agrees to the Contributor License
+Agreement in `CLA.md` before their contribution is accepted.** You keep the copyright in what you
 write; the agreement gives the owner the license needed to keep offering
 Morgan under both the GPL and other terms. Without it, every outside
 contribution would need its author's separate permission before Morgan could be
 licensed any other way.
 
-Say in your pull request that you have read `CLA.md` and agree to it.
+To agree, say in your pull request that you have read `CLA.md` and agree to it.
 
 ## Source files
 

@@ -23,7 +23,7 @@ export const BASICS = {
   userName: null,
   // How the assistant talks, in your own words; it goes into its instructions.
   style: "Talk the way a friend would: relaxed and warm, with contractions like I'd, you're and it's, everyday words, and nothing stiff or formal.",
-  ollama: { url: "http://192.168.0.244:11434", model: "qwen3.6:35b-a3b" },
+  ollama: { url: "http://localhost:11434", model: "qwen3.6:35b-a3b" },
   oracleModel: "sonnet",
   // Kokoro sounds more natural; Piper is lighter and starts speaking sooner.
   engine: "kokoro",

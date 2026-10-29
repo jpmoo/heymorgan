@@ -21,7 +21,7 @@ import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, TOOL_MODES, readOnly, se
 import { fileURLToPath } from "node:url";
 import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
-import { createAdmin } from "./admin.mjs";
+import { LOCAL_ONLY, createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
 import { sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
@@ -1700,7 +1700,7 @@ function settleNote(t, topic, note, action) {
 }
 
 // Where a note goes. Topics are areas of the user's life, not people or
-// things: given a topic that does not exist ("Chuck"), the model had made one.
+// things: given a topic that was a person's name, the model had made one.
 // So the choice is put as a narrow question, among the topics there are or a
 // new broad area of life, and a person, project or thing is filed under the
 // area it belongs to. On the notes in memory this put 56 of 67 back where they
@@ -4129,7 +4129,7 @@ function handle(line, socket) {
       // The settings window's requests: { op, args } in, JSON out.
       let request;
       try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "admin wants JSON: { op, args }" }); }
-      admin(String(request.op), request.args ?? {}).then(reply);
+      admin(String(request.op), request.args ?? {}, { remote: Boolean(socket.remote) }).then(reply);
       return;
     }
     case "describe": {
@@ -4259,7 +4259,11 @@ function onCommand(socket) {
 }
 const servers = SOCKETS.map((path) => {
   rmSync(path, { force: true });
-  return createServer(onCommand).listen(path, () => console.error(`heymorgan listening on ${path}`));
+  // Answered for this account only: whatever reaches this socket can do anything Morgan can.
+  return createServer(onCommand).listen(path, () => {
+    try { chmodSync(path, 0o600); } catch { /* gone already */ }
+    console.error(`heymorgan listening on ${path}`);
+  });
 });
 
 // ---------------------------------------------------------------- clients (on a server)
@@ -4365,7 +4369,9 @@ const access = createAccess(join(process.env.HEYMORGAN_DATA ?? CONFIG_HOME, "acc
 const links = new Map(); // a client's socket -> { name, kind, can }
 
 // What a client is told of the settings: not the services' addresses and keys.
-const forClients = (saved) => Object.fromEntries(Object.entries(saved).filter(([key]) => !["mcpServers", "oracle"].includes(key)));
+// What a client is told of the settings: not the services' addresses and keys,
+// and none of the settings that are commands (each machine keeps its own).
+const forClients = (saved) => Object.fromEntries(Object.entries(saved).filter(([key]) => !LOCAL_ONLY.test(key)));
 function tellClients(message) {
   const text = JSON.stringify(message);
   for (const link of links.keys()) if (link.readyState === 1) link.send(text);
@@ -4560,6 +4566,8 @@ async function doForServer(link, { id, name, args = {} }) {
 // (the voice, the wake phrase, the hotkey) needs this client started again.
 function mirror(config) {
   if (!config) return;
+  // Never a command from the server, whatever it sends: this machine's own stand.
+  config = Object.fromEntries(Object.entries(config).filter(([key]) => !LOCAL_ONLY.test(key)));
   const text = JSON.stringify(config, null, 2) + "\n";
   let before = "";
   try { before = readFileSync(MIRROR, "utf8"); } catch { /* the first time */ }
@@ -4727,7 +4735,7 @@ if (ROLE === "server") {
       }
       if (typeof message.command !== "string" || /^\s*watch\b/.test(message.command)) return;
       if (/^\s*(say|type|ask|continue)\b/.test(message.command)) turnFrom = link;
-      const answer = { end: (text) => { if (link.readyState === 1) link.send(JSON.stringify({ id: message.id, reply: JSON.parse(text) })); }, write: () => {} };
+      const answer = { remote: true, end: (text) => { if (link.readyState === 1) link.send(JSON.stringify({ id: message.id, reply: JSON.parse(text) })); }, write: () => {} };
       Promise.resolve().then(() => handle(message.command, answer)).catch((error) => {
         console.error(`command: ${error.stack ?? error.message}`);
         answer.end(JSON.stringify({ ok: false, error: error.message }));
@@ -4763,6 +4771,8 @@ const CHAT_PANEL = "jpmoo/morgan:chat";
 
 function bindHotkey() {
   if (!cfg.hotkey) return;
+  // Only a key combination ("SUPER, M"): the setting goes into a Hyprland command line.
+  if (!/^[A-Za-z0-9_ ]*,\s*[A-Za-z0-9_]+$/.test(cfg.hotkey)) return console.error(`hotkey: "${cfg.hotkey}" is not a key combination like "SUPER, M"; not bound`);
   const shell = join(HOME, ".local", "bin", "noctalia");
   execFile("hyprctl", ["--batch", `keyword unbind ${cfg.hotkey} ; keyword bind ${cfg.hotkey}, exec, ${shell} msg panel-toggle ${CHAT_PANEL}`], () => {});
 }

@@ -29,7 +29,7 @@ topics() { admin '{"op":"memory.list"}' | python3 -c 'import json,sys; print("  
 cat > "$here/_memory.json" <<'JSON'
 [{"q": "Remember that I take 10 mg of lisinopril every morning.", "route": "self", "want": []},
  {"q": "Remember that my car is a 2019 Subaru Outback.", "route": "self", "want": []},
- {"q": "Remember that Chuck likes to start meetings early.", "route": "self", "want": []},
+ {"q": "Remember that Sam likes to start meetings early.", "route": "self", "want": []},
  {"q": "Remember that I am planning a trip to Lisbon in March.", "route": "self", "want": []},
  {"q": "Remember my favourite sourdough flour is King Arthur bread flour. File it under Baking.", "route": "self", "want": []},
  {"q": "Actually, I no longer want to try 76% hydration; I am sticking with 74%. Remember that.", "route": "self", "want": []}]

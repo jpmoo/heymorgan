@@ -1,6 +1,6 @@
 {
   "name": "Morgan",
-  "ollama": { "url": "http://192.168.0.244:11434", "model": "qwen3.6:35b-a3b" },
+  "ollama": { "url": "http://localhost:11434", "model": "qwen3.6:35b-a3b" },
   "oracle": { "model": "sonnet" },
   "sttPrompt": "Morgan, the Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
   "mcpServers": {

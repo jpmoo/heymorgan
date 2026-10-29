@@ -1531,7 +1531,7 @@
   }
  },
  {
-  "say": "Don't let me forget to call Meghan at noon.",
+  "say": "Don't let me forget to call Alex at noon.",
   "want": {
    "reminder": true,
    "look": false,

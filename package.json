@@ -2,6 +2,7 @@
   "name": "heymorgan",
   "private": true,
   "description": "Morgan: a voice and chat assistant for the desktop, run by a local model that consults Claude.",
+  "license": "GPL-3.0-only",
   "type": "module",
   "dependencies": {
     "sherpa-onnx-node": "^1.13.8",

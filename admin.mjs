@@ -42,6 +42,14 @@ function oracleAccount(claude) {
   return account.reading;
 }
 
+// Settings that are commands Morgan runs, or that widen what the Oracle may do.
+// They are changed only on the machine itself (its own socket, or its own
+// settings file), never over a client's connection: a device's key would
+// otherwise be enough to run anything on the server, and through the settings
+// mirrored to clients, on every client too.
+// The Oracle's model may still be chosen from a client; its program and tools may not.
+export const LOCAL_ONLY = /^(tts|play|record|camera|oracle|oracle\.(claude|tools|allowedTools)(\..*)?|mcpServers(\..*)?)$/;
+
 export function createAdmin(d) {
   const sample = () => `Hello, I'm ${d.cfg.name}. This is how I would sound.`;
 
@@ -61,7 +69,9 @@ export function createAdmin(d) {
     }),
 
     // values: { "ollama.url": "...", followUpSeconds: 4 }. null goes back to the default.
-    "config.set": ({ values = {} }) => {
+    "config.set": ({ values = {} }, { remote = false } = {}) => {
+      const refused = remote ? Object.keys(values).filter((path) => LOCAL_ONLY.test(path)) : [];
+      if (refused.length) throw new Error(`${refused.join(", ")} can only be changed on the machine Morgan runs on, not from a client`);
       const saved = loadConfig();
       let restart = false;
       for (let [path, value] of Object.entries(values)) {
@@ -243,7 +253,8 @@ export function createAdmin(d) {
         }))),
       };
     },
-    "mcp.add": ({ name, url, key, command }) => {
+    "mcp.add": ({ name, url, key, command }, { remote = false } = {}) => {
+      if (remote && command) throw new Error("a server started as a command can only be added on the machine Morgan runs on, not from a client");
       name = String(name ?? "").replace(/[^A-Za-z0-9-]/g, "");
       if (!name) throw new Error("the server needs a short name of letters and digits");
       const spec = {};
@@ -326,10 +337,11 @@ export function createAdmin(d) {
     return ops["mcp.list"]();
   }
 
-  return async function admin(op, args = {}) {
+  // `remote`: the request came over a client's connection, not the machine's own socket.
+  return async function admin(op, args = {}, { remote = false } = {}) {
     if (!ops[op]) return { ok: false, error: `unknown: ${op}` };
     try {
-      return { ok: true, ...(await ops[op](args)) };
+      return { ok: true, ...(await ops[op](args, { remote })) };
     } catch (error) {
       return { ok: false, error: error.message.split("\n")[0] };
     }
