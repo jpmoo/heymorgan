@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // What kind of turn this is, decided in one place.
 //
 // The local model answers anything put to it with the same assurance, right or

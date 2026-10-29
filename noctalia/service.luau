@@ -1,4 +1,6 @@
 --!nonstrict
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (c) 2026 Jeff Moore
 -- Follows the heymorgan daemon's event stream and publishes what the widget
 -- and the voice panel draw. Shows the panel while Morgan is doing anything.
 

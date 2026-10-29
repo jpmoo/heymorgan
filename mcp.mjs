@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // A small MCP client: enough of the protocol to list a server's tools and call
 // them, over stdio or streamable HTTP. Servers that authenticate with a header
 // work; servers that need an OAuth sign-in do not, and belong with the Oracle.

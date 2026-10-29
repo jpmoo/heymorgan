@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 # Stop Morgan, pull the latest, reinstall, and start again.
 #
 # Works wherever Morgan runs as a service: today that is a user service on the

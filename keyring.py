@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 """Print Morgan's data key, creating it on first use.
 
 The key lives in the login keyring, which is itself encrypted with the login

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Which part this copy of Morgan plays, settled before anything else looks.
 //
 //   local   the whole of Morgan on this machine (the laptop, as it has been)

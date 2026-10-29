@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // The Kokoro voice, kept loaded. As a server (no arguments) it listens on a
 // Unix socket: a connection sends text and gets back raw 16-bit mono audio at
 // 24 kHz. With --say it speaks one line and exits, for previews.

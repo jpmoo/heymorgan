@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // The keys that let client apps reach a server: issued here, one per device,
 // shown once, kept only as a hash. `heymorgan access add|list|remove`.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";

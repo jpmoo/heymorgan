@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 [Unit]
 Description=Morgan, voice assistant daemon (heymorgan)
 After=pipewire.service

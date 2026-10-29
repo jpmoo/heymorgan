@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // heymorgan settings: numbered menus over config.json. Every change is saved
 // as it is made; the daemon is restarted once, on the way out.
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // What the daemon, the command and the settings menu all need to agree on.
 
 import { CONFIG_HOME, ROLE, SHARE, TRIAL } from "./env.mjs"; // first: it settles where things are kept

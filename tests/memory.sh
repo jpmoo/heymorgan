@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 # Memory looked after: notes put through the topic gate, a correction made in
 # place, then every topic aged a fortnight and the gardener run. On a copy of
 # this machine's memory, as a Morgan of its own: never a client of the real

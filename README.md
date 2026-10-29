@@ -157,6 +157,6 @@ Downloaded or installed separately, each under its own license:
 
 ## License
 
-GPL-3.0-only — see [LICENSE](LICENSE). Also available on other terms from the
+Copyright © 2026 Jeff Moore. GPL-3.0-only — see [LICENSE](LICENSE). Also available on other terms from the
 owner, as Talaris is. Contributions need the [Contributor License
 Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md).

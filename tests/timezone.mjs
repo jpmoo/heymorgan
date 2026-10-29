@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // The time zone setting works by setting TZ while the daemon runs (daemon.mjs,
 // applyTimeZone). That rests on Node taking TZ up again when it changes, which
 // is what this checks — with the moment that went wrong: 7 PM in New York on

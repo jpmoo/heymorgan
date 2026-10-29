@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Every wording in sorting.json, put to the sorter alone and checked against
 // the fields given for it. Fast: nothing but the one narrow call per wording.
 //

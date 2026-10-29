@@ -1,4 +1,6 @@
 --!nonstrict
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (c) 2026 Jeff Moore
 -- The settings window: memory, voice, listening, files and connections. It
 -- holds no settings of its own. Everything shown is asked of the daemon, and
 -- every change is a request to it (`heymorgan admin`), so this window and
@@ -955,6 +957,11 @@ local function connectionsTab()
       end }),
     }),
     hint("Servers that need a browser sign-in cannot be added here; those are reached through the Oracle."),
+  }))
+  -- The notices the GPL asks an interactive program to show.
+  table.insert(out, card("About", {
+    hint("Morgan, a voice and chat assistant. Copyright © 2026 Jeff Moore."),
+    hint("Free software under the GNU General Public License, version 3 only, with absolutely no warranty; also available on other terms from the owner. Source: github.com/jpmoo/heymorgan"),
   }))
   return out
 end

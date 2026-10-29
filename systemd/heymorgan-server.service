@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 # Morgan (heymorgan) on the home server — reference template, as Brigid's is.
 #
 # It runs from its project checkout, as the other web apps there do. Replace:

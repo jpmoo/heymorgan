@@ -1,4 +1,6 @@
 --!nonstrict
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (c) 2026 Jeff Moore
 -- The pop-up: who has the floor, a waveform of their voice, and the words.
 
 -- One accent of the user's choosing in place of the theme's colours, which in

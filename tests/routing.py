@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 """
 How well questions are routed and answered: each one in questions.json is put
 to a daemon, and what comes back is checked for whether the Oracle was asked

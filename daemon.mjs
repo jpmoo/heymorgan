@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // heymorgan daemon: microphone -> speech-to-text -> Morgan -> text-to-speech.
 //
 // Morgan is a local model served by Ollama and answers everything it can.

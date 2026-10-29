@@ -1,4 +1,6 @@
 --!nonstrict
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (c) 2026 Jeff Moore
 -- Bar widget: shows what Morgan is doing. Click to start or stop listening.
 
 local heymorgan = noctalia.expandPath("~/.local/bin/heymorgan")

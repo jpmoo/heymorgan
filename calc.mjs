@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Arithmetic, done exactly. The model is not left to do sums: asked for 17
 // percent of 3,480 it said 626.4. It writes the sum out and this works it.
 //

@@ -1,4 +1,6 @@
 --!nonstrict
+-- SPDX-License-Identifier: GPL-3.0-only
+-- Copyright (c) 2026 Jeff Moore
 -- The chat window: the conversation so far, a box to type in, and a button to
 -- speak instead. Typed turns are answered in text; spoken ones aloud as well.
 

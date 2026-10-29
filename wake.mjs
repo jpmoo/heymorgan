@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Spotting the wake word with a small model that listens for it and nothing
 // else, in place of transcribing everything the microphone hears.
 

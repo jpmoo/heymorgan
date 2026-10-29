@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Timers and reminders: when they are due, and saying so.
 //
 // The model is good at understanding "remind me to call Ana at half three on

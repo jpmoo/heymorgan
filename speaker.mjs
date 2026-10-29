@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Whose voice is this? A small model turns a stretch of speech into a list of
 // numbers that is much the same for one person and different for another.
 // Voiceprints are kept sealed, as numbers; no recording is kept.

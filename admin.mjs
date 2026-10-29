@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // The daemon's side of the settings window: one request, one JSON answer.
 // The window (and anything else) sends `admin {"op": ..., "args": {...}}`;
 // what it may read and change is exactly what is listed here.

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // heymorgan chat                                                             (typed conversation)
 // heymorgan settings                                                         (menus for everything below)
 // heymorgan toggle | say <text> | type <text> | stop | new | interview | status | watch
@@ -14,6 +16,19 @@ import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveC
 
 const args = process.argv.slice(2);
 const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logout"], account: ["auth", "status", "--text"] };
+
+// The notices the GPL asks an interactive program to show.
+if (["version", "-v", "--version", "about"].includes(args[0])) {
+  console.log([
+    "heymorgan: Morgan, a voice and chat assistant",
+    "Copyright (C) 2026 Jeff Moore",
+    "This program comes with ABSOLUTELY NO WARRANTY. It is free software: you can",
+    "redistribute it and modify it under the terms of the GNU General Public License,",
+    "version 3 only (https://www.gnu.org/licenses/gpl-3.0.html). Also available on",
+    "other terms from the owner. Source: https://github.com/jpmoo/heymorgan",
+  ].join("\n"));
+  process.exit(0);
+}
 
 if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
   console.error([

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 # A trial daemon beside the one in use: its own socket, its own empty memory
 # with a few facts put in, no microphone, no voice, no MCP servers. Then the
 # routing questions are put to it.

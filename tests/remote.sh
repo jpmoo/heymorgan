@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
 # A trial server and a trial client on this machine, talking over a WebSocket
 # as the home server and the laptop will, beside the Morgan in use and away
 # from it: a copy of the memory, no services, no microphone, no voice.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Jeff Moore
 // Everything ever said, kept as one line per exchange, with an embedding of
 // each so that earlier conversations can be found by meaning as well as by
 // word and by date. Every line is sealed: see seal() in lib.mjs.
