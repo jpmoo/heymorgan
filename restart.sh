@@ -21,7 +21,7 @@ for name in heymorgan heyclaude; do
 done
 # A laptop with its own brain runs it beside the device (heymorgan serve): both go down and come up together.
 brain=""
-if [ "$where" = "user service" ] && systemctl --user cat heymorgan-brain.service >/dev/null 2>&1; then brain=heymorgan-brain; fi
+if [ "${where:-}" = "user service" ] && systemctl --user cat heymorgan-brain.service >/dev/null 2>&1; then brain=heymorgan-brain; fi
 
 if [ -z "$unit" ]; then
   echo "==> No Morgan service is installed here. See systemd/ for the unit." >&2
