@@ -75,10 +75,10 @@ settings included; with Serve the tokens are a second lock.
 { "server": "home-server:8790" }
 ```
 
-Set from the settings window (a "Morgan's home" field on the Connections tab) or
-`heymorgan settings`. Left empty, the laptop runs the whole of Morgan itself, as
-it does today; that stays possible during the move and after it, for a laptop
-away from home with no Tailscale.
+Set from the settings window (Where its brain is) or `heymorgan connect`. A
+laptop away from home with no Tailscale keeps the brain itself instead
+(`heymorgan serve`): then `client.json` says `localhost:8790`, and the laptop's
+device reaches its own brain the same way it reaches the home server's.
 
 ### Clients are thin, not dumb
 
@@ -221,20 +221,36 @@ And two corrections to the review:
 
 ## Where it stands
 
-Built and tested on the laptop (`tests/remote.sh` runs a trial server and client
-side by side): the three roles, the server's port and access keys, the client
-relaying commands and events, spoken turns answered on the server and spoken on
-the client, the settings mirrored from the server, the "can't reach home" line,
-and the "Where Morgan lives" settings. Deploying it is in [deploy.md](deploy.md).
+Built (2026-10-30), and tested on the laptop with trial brains and devices side
+by side (`tests/remote.sh`, `tests/speech.sh`, `tests/devices.mjs`):
 
-Not yet: sight and the laptop's folders as abilities the server asks the laptop
-for; speech on the AI server (Phase 1); wake arbitration (Phase 3); the Dot.
+- **Brain and device, everywhere.** Wherever the brain runs it is a server: a
+  laptop with its own brain runs it as a second service (`heymorgan serve`) and
+  its device reaches it at `localhost:8790` with a key, as the Dot reaches the
+  home server. Only the address differs. Talaris and the settings window choose
+  "on this computer" or "on another computer", and list the brain's devices.
+- **Phase 1, speech on the brain.** Devices send what they heard and get back
+  words, send sentences and get back sound, and are told whose voice it is.
+  The brain does it with its own models, or asks a speech service on the AI
+  server (`speech.mjs serve`, `speechUrl`). Not a Python service, as planned
+  below: the same code a device would use, so there is one implementation.
+  Voices are kept on the brain: the first device a voice is taught on makes
+  the shared one; any device may have its own instead.
+- **Phase 2**, as before: sight, folders and a device's own tools as abilities.
+- **Phase 3**: wake arbitration, the "can't reach home" sound on every device
+  (in the brain's voice, kept for when it is gone), and the devices list.
+- **Phase 4, in software**: `pi/lights.py` for the bonnet's LEDs, a ring and
+  the button (press to talk or stop, hold to mute).
+
+Not yet: the speech service installed on the AI server; the Dot built and
+measured (the spotter on a Zero 2 W, the bonnet's pins); Whisper's model size
+measured there.
 
 ## Phases
 
 Each phase ends with Morgan working, and with a check that says so.
 
-### Phase 0 — groundwork (now)
+### Phase 0 — groundwork (done)
 
 - `restart.sh`, in the shape of Brigid's: stop, pull, install, check, start, and
   bring the old one back up if any step fails. It restarts the user service on
@@ -244,7 +260,7 @@ Each phase ends with Morgan working, and with a check that says so.
 
 *Done when* `./restart.sh` on the laptop leaves Morgan running.
 
-### Phase 1 — speech on the AI server
+### Phase 1 — speech on the AI server (built: see Where it stands)
 
 - A small speech service beside Ollama: `POST /transcribe`, `POST /voiceprint`,
   `POST /speak` (sentence in, audio out). Python, faster-whisper and Kokoro on
@@ -257,7 +273,7 @@ Each phase ends with Morgan working, and with a check that says so.
 *Done when* a spoken turn on the laptop is transcribed, recognised and spoken by
 the AI server, and `tests/steps.py` shows no slower a first word than now.
 
-### Phase 2 — the brain to the home server
+### Phase 2 — the brain to the home server (done)
 
 - Clone the project on the home server, beside the other web apps, and run it
   there as a system service whose working directory is the checkout.
@@ -280,7 +296,7 @@ the AI server, and `tests/steps.py` shows no slower a first word than now.
 including sight, files, reminders and the calendar view, and nothing secret is
 left on the laptop.
 
-### Phase 3 — more than one client
+### Phase 3 — more than one client (built)
 
 - Wake arbitration, `stand-down`, and the answer playing where it was asked.
 - The "can't reach home" fallback on every client.
@@ -290,7 +306,7 @@ left on the laptop.
 *Done when* two clients in one room give one answer, and pulling the home server
 off the network makes each client say so.
 
-### Phase 4 — the Dot
+### Phase 4 — the Dot (its software built; the build itself to do)
 
 - The enclosure: a 3rd-generation Echo Dot (99 mm).
 - The build: Pi Zero 2 W, Adafruit Voice Bonnet (two mics, speaker amplifier,

@@ -32,6 +32,10 @@ import json, os, sys
 config = json.load(open(os.path.expanduser("~/.config/heymorgan/config.json")))
 config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "piper", "hotkey": None,
                "echoCancel": False, "record": "sleep 100", "followUpSeconds": 0, "mcpServers": {}})
+# The brain doing its devices' speech, with Piper (SERVER_SPEECH=piper) or Kokoro (=kokoro); its stt is this machine's whisper.
+if os.environ.get("SERVER_SPEECH"):
+    piper = os.path.expanduser("~/.local/share/heymorgan/piper/piper")
+    config.update({"tts": f"'{piper}' --model {{voice}} --output-raw", "engine": os.environ["SERVER_SPEECH"]})
 # Folders and sight for the client to offer the server, when a test gives them.
 if os.environ.get("FOLDERS"):
     config["folders"] = json.loads(os.environ["FOLDERS"])
@@ -64,6 +68,7 @@ export HEYMORGAN_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/hc-client.sock"
 client_loop=$!
 for _ in $(seq 40); do grep -q "home: connected" "$trial/client.log" 2>/dev/null && break; sleep 0.5; done
 
+export TRIAL_DATA="$data" TRIAL_PORT="$port"
 echo "server log: $trial/server.log   client log: $trial/client.log   client socket: $HEYMORGAN_SOCKET"
 if [ $# -gt 0 ]; then "$@"; else echo "Given no command to run, waiting; Ctrl+C ends both."; wait; fi
 echo "--- server log"; grep -v "^\s*$" "$trial/server.log" | tail -15

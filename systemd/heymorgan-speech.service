@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
+# Morgan's speech service — reference template — on a machine kept for it (the
+# AI server, beside Ollama): sound into words, words into sound, speech into a
+# voiceprint, for a brain whose `speechUrl` names it. It keeps nothing.
+#
+# Replace YOUR_USER and the checkout path. SPEECH_KEY is the key brains give
+# (their `speechKey`); put it, and SPEECH_PORT if not 8791, in the checkout's
+# .env. Its voice and commands are that account's ~/.config/heymorgan/config.json,
+# and its models are under ~/.local/share/heymorgan/, as on any Morgan.
+
+[Unit]
+Description=heymorgan speech — speech for Morgan's brains
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/heymorgan
+ExecStart=/usr/bin/node /home/YOUR_USER/heymorgan/speech.mjs serve
+Restart=always
+RestartSec=3
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

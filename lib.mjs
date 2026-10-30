@@ -2,13 +2,15 @@
 // Copyright (c) 2026 Jeff Moore
 // What the daemon, the command and the settings menu all need to agree on.
 
-import { CONFIG_HOME, ROLE, SHARE, TRIAL } from "./env.mjs"; // first: it settles where things are kept
+import { CLIENT_FILE, CONFIG_HOME, HOUSED, ROLE, ROOT, SHARE, TRIAL } from "./env.mjs"; // first: it settles where things are kept
 
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir, hostname } from "node:os";
+import { createAccess } from "./access.mjs";
 
 export { CONFIG_HOME };
 export const CONFIG = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
@@ -116,6 +118,21 @@ export function previewVoice(name, text) {
   spawnSync("sh", ["-c", command], { input: text + "\n", stdio: ["pipe", "ignore", "ignore"] });
 }
 
+// What is read aloud to teach Morgan a voice: on screen in the settings, or
+// said by Morgan, line by line, on a device with no screen.
+export function enrolPhrases(config) {
+  const name = config.name ?? BASICS.name;
+  const wake = ("wakeWord" in config ? config.wakeWord : null) ?? `Hey ${name}`;
+  return [
+    `${wake}, what's on my calendar for tomorrow afternoon?`,
+    "Remind me to pick up the dry cleaning on the way home.",
+    "The quick brown fox jumps over the lazy dog by the river.",
+    `${wake}, read me the first three things on my task list.`,
+    "I'd like to hear the weather for the weekend, please.",
+    `${name}, stop. Never mind, that's all for now, thanks.`,
+  ];
+}
+
 // Memory and transcripts are encrypted at rest with a key held in the login
 // keyring. Each sealed piece is base64 of nonce, tag and AES-256-GCM ciphertext.
 let key = null;
@@ -193,14 +210,76 @@ export function toolMode(spec, tool) {
 export const toolAllowed = (spec, tool) => toolMode(spec, tool) !== "off";
 
 // The service, under its old name where it has not been switched over yet.
-// On a server it is a system service, as the other apps there are.
+// A brain kept in its checkout is a system service, as the other apps on the
+// home server are; a brain in someone's session is heymorgan-brain, beside
+// that machine's device (heymorgan).
 export function serviceName() {
-  const scope = ROLE === "server" ? [] : ["--user"];
+  if (ROLE === "server" && !HOUSED) return "heymorgan-brain.service";
+  const scope = HOUSED ? [] : ["--user"];
   return spawnSync("systemctl", [...scope, "cat", "heymorgan.service"], { stdio: "ignore" }).status === 0 ? "heymorgan.service" : "heyclaude.service";
 }
 
 export function restartDaemon() {
   if (TRIAL) return; // a trial configuration, not the service's
-  if (ROLE === "server") spawnSync("sudo", ["systemctl", "restart", serviceName()], { stdio: "inherit" });
+  if (HOUSED) spawnSync("sudo", ["systemctl", "restart", serviceName()], { stdio: "inherit" });
   else spawnSync("systemctl", ["--user", "restart", serviceName()]);
+}
+
+// ---------------------------------------------------------------- where the brain is
+//
+// A device reaches its brain at an address, with a key, whether the brain is
+// the home server or this same laptop. `heymorgan serve` makes this machine a
+// brain as well as a device: the brain as its own service (heymorgan-brain),
+// a key for this machine's device, and the device pointed at localhost.
+
+export const BRAIN_PORT = 8790;
+const BRAIN_UNIT = join(homedir(), ".config", "systemd", "user", "heymorgan-brain.service");
+// The brain's keys, where a brain in this account's session keeps them (env.mjs: not HOUSED).
+const SESSION_ACCESS = join(CONFIG_HOME, "access.json");
+
+// Whether an address is this machine.
+export function isHere(address) {
+  const host = String(address ?? "").replace(/^\w+:\/\//, "").replace(/[/:].*$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+  return ["localhost", "127.0.0.1", "::1", hostname().toLowerCase()].includes(host);
+}
+
+export const brainInstalled = () => existsSync(BRAIN_UNIT);
+
+const readClientFile = () => { try { return JSON.parse(readFileSync(CLIENT_FILE, "utf8")); } catch { return {}; } };
+function writeClientFile(value) {
+  mkdirSync(dirname(CLIENT_FILE), { recursive: true });
+  writeFileSync(CLIENT_FILE, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+}
+
+// This machine as a brain, and its device a client of it. Its memory, models
+// and Claude sign-in are this account's own (as a whole Morgan's were).
+// Returns what the device was pointed at; the device itself is started again
+// by whoever asked.
+export function serveHere({ device, port = BRAIN_PORT } = {}) {
+  if (TRIAL) throw new Error("not in a trial");
+  const kept = readClientFile();
+  device = String(device || kept.device || hostname()).trim();
+  const unit = readFileSync(join(ROOT, "systemd", "heymorgan-brain.service"), "utf8")
+    .replaceAll("@NODE@", process.execPath).replaceAll("@CHECKOUT@", ROOT).replaceAll("@PORT@", String(port));
+  mkdirSync(dirname(BRAIN_UNIT), { recursive: true });
+  writeFileSync(BRAIN_UNIT, unit);
+  // A key for this machine's device, made before the brain starts and reads its list.
+  const access = createAccess(SESSION_ACCESS);
+  access.remove(device);
+  const key = access.add(device);
+  const systemctl = (...args) => spawnSync("systemctl", ["--user", ...args], { encoding: "utf8" });
+  systemctl("daemon-reload");
+  systemctl("enable", "heymorgan-brain.service");
+  const started = systemctl("restart", "heymorgan-brain.service");
+  if (started.status !== 0) throw new Error(`the brain did not start: ${started.stderr.trim()}`);
+  const server = `localhost:${port}`;
+  writeClientFile({ ...kept, server, key, device });
+  return { server, device };
+}
+
+// This machine's brain stopped and left off at login, when its device goes to another.
+export function stopServingHere() {
+  if (TRIAL || !brainInstalled()) return false;
+  spawnSync("systemctl", ["--user", "disable", "--now", "heymorgan-brain.service"], { stdio: "ignore" });
+  return true;
 }

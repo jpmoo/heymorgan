@@ -12,7 +12,7 @@ import { connect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { BASICS, VOICES, fetchVoice, loadConfig, oracleEnv, restartDaemon, saveConfig, serviceName } from "../lib.mjs";
+import { BASICS, VOICES, fetchVoice, isHere, loadConfig, oracleEnv, restartDaemon, saveConfig, serveHere, serviceName, stopServingHere } from "../lib.mjs";
 
 const args = process.argv.slice(2);
 const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logout"], account: ["auth", "status", "--text"] };
@@ -48,10 +48,14 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heymorgan threads               earlier conversations, as the threads they were cut into",
     "heymorgan tools                 the last few tool calls and what came back",
     "heymorgan log [-f]              what the assistant has logged lately | follow it as it happens",
-    "heymorgan connect <server> <key> [device]   make this machine a client of a server (host:port, or https://host/heymorgan)",
-    "heymorgan disconnect            run the whole assistant on this machine again",
-    "heymorgan device [<setting> <value> | <setting> --clear]   this device's own settings, over the server's (a Pi's voice, its sound commands)",
-    "heymorgan access add|list|remove [device]   on a server: the keys that let client apps in",
+    "heymorgan serve [device]        keep Morgan's brain on this machine, for this device and any other given a key",
+    "heymorgan connect <brain> <key> [device]   use the brain at that address (host:port, or https://host/heymorgan)",
+    "heymorgan devices [add|remove <device>]   the devices that may reach the brain; add one to get its key",
+    "heymorgan device [<setting> <value> | <setting> --clear]   this device's own settings, over the brain's (a Pi's voice, its sound commands)",
+    "heymorgan enroll <name> [--here | --everywhere] [--device <device>]   teach a voice (on that device, which says the lines)",
+    "heymorgan forget-voice <name> [--everywhere]   forget a voice taught on this device (or the one every device shares)",
+    "heymorgan mute [on|off]         this device's microphone, as a speaker's button does",
+    "heymorgan brain <command>       the same commands, put to the brain on this machine rather than its device",
     "heymorgan admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
   process.exit(args.length ? 0 : 2);
@@ -206,21 +210,31 @@ if (args[0] === "device") {
   process.exit(0);
 }
 
-if (args[0] === "connect" || args[0] === "disconnect") {
-  // Which server this machine is a client of, kept in client.json; none, and it runs Morgan itself.
-  const { CLIENT_FILE } = await import("../env.mjs");
-  if (args[0] === "connect") {
-    const [, server, key, device] = args;
-    if (!server || !key?.startsWith("hc_")) { console.error("usage: heymorgan connect <host:port | https://host/heymorgan> <key from `heymorgan access add` on the server> [device name]"); process.exit(2); }
-    // Kept as they are: the device's own settings, its kind, its own tool servers.
-    const kept = readClient(CLIENT_FILE);
-    writeClient(CLIENT_FILE, { ...kept, server, key, ...(device ? { device } : {}) });
-    console.error(`This machine is now a client of ${server}.`);
-  } else {
-    const { server, key, ...kept } = readClient(CLIENT_FILE);
-    if (Object.keys(kept).length) writeClient(CLIENT_FILE, kept); else rmSync(CLIENT_FILE, { force: true });
-    console.error("This machine runs the whole assistant itself again.");
+if (args[0] === "serve" || args[0] === "disconnect") {
+  // The brain here, as its own service, and this machine's device a client of it.
+  // (`disconnect` was "run the whole of Morgan here"; this is what that is now.)
+  try {
+    const { server, device } = serveHere({ device: args[1] });
+    console.error(`Morgan's brain is on this machine now (heymorgan-brain), and this device, ${device}, reaches it at ${server}.`);
+    console.error("Other devices: `heymorgan devices add <name>` for a key, and let them in with `listen` set to network in the settings.");
+  } catch (error) {
+    console.error(`heymorgan: ${error.message}`);
+    process.exit(1);
   }
+  restartDaemon();
+  process.exit(0);
+}
+
+if (args[0] === "connect") {
+  // Which brain this device uses, kept in client.json.
+  const { CLIENT_FILE } = await import("../env.mjs");
+  const [, server, key, device] = args;
+  if (!server || !key?.startsWith("hc_")) { console.error("usage: heymorgan connect <host:port | https://host/heymorgan> <key from `heymorgan devices add` on the brain> [device name]"); process.exit(2); }
+  // Kept as they are: the device's own settings, its kind, its own tool servers.
+  const kept = readClient(CLIENT_FILE);
+  writeClient(CLIENT_FILE, { ...kept, server, key, ...(device ? { device } : {}) });
+  console.error(`This device now uses the brain at ${server}.`);
+  if (!isHere(server) && stopServingHere()) console.error("The brain this machine kept (heymorgan-brain) is stopped; `heymorgan serve` brings it back.");
   restartDaemon();
   process.exit(0);
 }
@@ -256,8 +270,12 @@ if (args[0] === "voice") {
   args.splice(0, args.length, "speak", "Hello, this is how I sound now.");
 }
 
-// A daemon from before the rename answers only on heymorgan.sock.
+// A daemon from before the rename answers only on heymorgan.sock. `heymorgan brain …` asks the brain on this machine.
 const RUN = process.env.XDG_RUNTIME_DIR ?? "/tmp";
+if (args[0] === "brain") {
+  args.shift();
+  process.env.HEYMORGAN_SOCKET = (await import("../env.mjs")).BRAIN_SOCKET;
+}
 const SOCKET = process.env.HEYMORGAN_SOCKET
   ?? ["heymorgan.sock", "heymorgan.sock"].map((name) => join(RUN, name)).find((path) => existsSync(path))
   ?? join(RUN, "heymorgan.sock");
@@ -315,6 +333,31 @@ if (args[0] === "chat") {
     } else if (reply.keys) {
       if (!reply.keys.length) console.log("No keys yet. Make one with: heymorgan access add <device>");
       for (const key of reply.keys) console.log(`${key.name.padEnd(20)} made ${new Date(key.made).toLocaleDateString()}   last used ${key.used ? new Date(key.used).toLocaleString() : "never"}`);
+    } else console.error("Done.");
+  });
+} else if (args[0] === "devices") {
+  // The devices that may reach the brain, asked of it through this device.
+  const [, what, name] = args;
+  const op = what === "add" ? "devices.add" : what === "remove" ? "devices.remove" : "devices.list";
+  if (what && !name) { console.error("usage: heymorgan devices [add <device> | remove <device>]"); process.exit(2); }
+  let answer = "";
+  const socket = open(`admin ${JSON.stringify({ op, args: { name } })}`);
+  socket.on("data", (chunk) => { answer += chunk; });
+  socket.on("end", () => {
+    const reply = JSON.parse(answer);
+    if (!reply.ok) { console.error(`heymorgan: ${reply.error}`); process.exitCode = 1; return; }
+    if (reply.key) {
+      console.error(`A key for ${reply.name}. It is shown only now; on that device run:\n`);
+      console.log(`heymorgan connect <this brain's address> ${reply.key} ${reply.name}`);
+    } else if (reply.devices) {
+      console.log(`The brain lets in ${reply.listen === "local" ? "only devices on its own machine" : "devices from the network"}.`);
+      if (!reply.devices.length) console.log("No devices yet. Add one with: heymorgan devices add <device>");
+      for (const device of reply.devices) {
+        const notes = [device.connected ? `connected${device.kind ? ` (${device.kind})` : ""}` : `last seen ${device.used ? new Date(device.used).toLocaleString() : "never"}`];
+        if (device.ownVoices?.length) notes.push(`its own voices: ${device.ownVoices.join(", ")}`);
+        if (device.hearsPoorly) notes.push("hears you poorly: teach it your voice there (heymorgan enroll <name> --here --device " + device.name + ")");
+        console.log(`${device.name.padEnd(20)} ${notes.join("; ")}`);
+      }
     } else console.error("Done.");
   });
 } else if (args[0] === "log") {

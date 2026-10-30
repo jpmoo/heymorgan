@@ -8,11 +8,10 @@ import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
-  BASICS, CONFIG, KOKORO, SPEECH, KOKORO_VOICES, MEMORY, PIPER, VOICES, VOICE_REPO,
+  BASICS, CONFIG, KOKORO, SPEECH, enrolPhrases, KOKORO_VOICES, MEMORY, PIPER, VOICES, VOICE_REPO,
   fetchVoice, loadConfig, oracleEnv, readOnly, toolAllowed, previewVoice, readSealed, restartDaemon, saveConfig, voiceFile, writeSealed,
 } from "./lib.mjs";
 import { McpClient } from "./mcp.mjs";
-import { voiceprints } from "./speaker.mjs";
 
 const PICTURES = join(MEMORY, "pictures");
 
@@ -751,24 +750,19 @@ const daemon = (...args) => {
   try { return JSON.parse(result.stdout); } catch { return { ok: false, error: result.stderr.trim() || "the assistant is not running" }; }
 };
 
+// The voices Morgan answers to, as the daemon says: the brain's, when it does this device's speech.
+const voiceprints = () => {
+  const status = daemon("voices");
+  return (status.prints ?? (status.enrolled ?? []).map((name) => ({ name }))).map((print) => ({ ...print, own: Boolean(print.own) }));
+};
+
 function voicesSummary() {
   const names = voiceprints().map((print) => print.name);
   if (!names.length) return "anyone: no voice has been taught";
   return (config.knownVoicesOnly ?? true) ? `only ${names.join(", ")}` : `anyone (taught: ${names.join(", ")})`;
 }
 
-const phrases = () => {
-  const name = config.name ?? BASICS.name;
-  const wake = ("wakeWord" in config ? config.wakeWord : null) ?? `Hey ${name}`;
-  return [
-    `${wake}, what's on my calendar for tomorrow afternoon?`,
-    "Remind me to pick up the dry cleaning on the way home.",
-    "The quick brown fox jumps over the lazy dog by the river.",
-    `${wake}, read me the first three things on my task list.`,
-    "I'd like to hear the weather for the weekend, please.",
-    `${name}, stop. Never mind, that's all for now, thanks.`,
-  ];
-};
+const phrases = () => enrolPhrases(config);
 
 // Read six sentences aloud; the daemon takes each as a sample of the voice.
 async function teachVoice() {
@@ -801,12 +795,12 @@ async function teachVoice() {
 }
 
 async function voicesMenu() {
-  if (!existsSync(join(SPEECH, "speaker"))) return console.log("The voice model is not installed.");
+  if (!daemon("voices").installed) return console.log("The voice model is not installed where this device's speech is done.");
   for (;;) {
     const prints = voiceprints();
     const only = config.knownVoicesOnly ?? true;
     const choice = await menu("Voices it answers to", [
-      ...prints.map((print) => ({ key: `drop:${print.name}`, label: print.name, value: `taught ${new Date(print.t).toLocaleDateString()}` })),
+      ...prints.map((print) => ({ key: `drop:${print.name}`, label: print.name, value: `${print.t ? `taught ${new Date(print.t).toLocaleDateString()}` : "taught"}${print.own ? ", on this device" : ""}` })),
       { key: "teach", label: dim("Teach it a voice") },
       { key: "only", label: "Ignore voices it has not been taught", value: prints.length ? (only ? "yes" : "no") : "nothing taught yet, so it answers anyone" },
       { key: "bar", label: "How alike a voice must be", value: `${config.voiceThreshold ?? 0.4}  ${dim("0 to 1; lower forgives more")}` },

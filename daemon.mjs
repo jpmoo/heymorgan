@@ -9,7 +9,7 @@
 // back for Morgan to relay. A Unix socket takes commands (toggle, say, stop,
 // new, status, watch) and streams events.
 
-import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, HEADLESS, MIRROR, SHARE } from "./env.mjs"; // first: which part this copy plays, and where things are kept
+import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, HEADLESS, HOUSED, MIRROR, SHARE, TRIAL } from "./env.mjs"; // first: which part this copy plays, and where things are kept
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
@@ -19,7 +19,7 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
-import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, TOOL_MODES, readOnly, serviceName, readSealed, toolAllowed, toolMode, writeSealed } from "./lib.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, enrolPhrases, isHere, serveHere, stopServingHere, TOOL_MODES, readOnly, serviceName, readSealed, toolAllowed, toolMode, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
@@ -28,7 +28,8 @@ import * as reminders from "./reminders.mjs";
 import { sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
 import { createAccess } from "./access.mjs";
-import * as voiceprint from "./speaker.mjs";
+import { closest, deviceStore, voiceStore } from "./speaker.mjs";
+import { SPEECH_DEFAULTS, createSpeech, remoteSpeech } from "./speech.mjs";
 
 const HOME = homedir();
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
@@ -53,10 +54,6 @@ for (const level of ["log", "warn", "error"]) {
 
 const MEMORY = process.env.HEYMORGAN_MEMORY ?? join(SHARE, "memory");
 
-// Where install.sh puts whisper.cpp, Piper and their models.
-const SPEECH = SHARE;
-const WHISPER = join(SPEECH, "whisper.cpp", "build", "bin", "whisper-cli");
-const PIPER = join(SPEECH, "piper", "piper");
 
 // At login this can start before the desktop does. Screenshots, the clipboard
 // and the hotkey all need to know which desktop session to talk to, so wait
@@ -141,9 +138,7 @@ const defaults = {
   sight: BASICS.sight,
   camera: "/dev/video0",
   // {prompt} is sttPrompt: words whisper should expect, so names come out right.
-  stt: existsSync(WHISPER)
-    ? `'${WHISPER}' -m '${SPEECH}/models/ggml-base.en.bin' -f {file} -nt -np -t 6 --prompt {prompt}`
-    : null,
+  stt: SPEECH_DEFAULTS.stt,
   // The assistant's name and the wake phrase are added to these by themselves.
   sttPrompt: "The Oracle, Hyprland, Noctalia, Hermes Notes, Talaria.",
   // A Piper voice, by name: `heymorgan voice` lists and fetches them.
@@ -158,7 +153,23 @@ const defaults = {
   pronunciations: {},
   // tts reads one sentence on stdin and writes it as raw 16-bit mono audio on
   // stdout ({voice} is the voice's .onnx file); play plays that from stdin.
-  tts: existsSync(PIPER) ? `'${PIPER}' --model {voice} --output-raw` : null,
+  tts: SPEECH_DEFAULTS.tts,
+  // Where a device's speech is done: "brain" (sent there, and spoken from what
+  // comes back), "here" (this device's own whisper, Kokoro or Piper, and voice
+  // model), or "auto": the brain's when it offers speech, else here.
+  speech: "auto",
+  // The brain's: a speech service to do its speech (`node speech.mjs serve`
+  // on the AI server), and the key it gives; empty, it does speech itself.
+  speechUrl: "",
+  speechKey: "",
+  // A brain in someone's session: "local" lets in only devices on this
+  // machine; "network" any that has a key. A brain kept in its checkout (the
+  // home server) goes by HOST in its .env.
+  listen: "local",
+  // A device's lights and button (a Pi in a speaker): a command that is told
+  // Morgan's state, one word a line on its stdin, and says "press" or "hold"
+  // on its stdout when the button is pressed (pi/lights.py).
+  lights: null,
   play: "pw-play --raw --rate {rate} --channels 1 --format s16 -",
   // A conversation left alone this long is over: what was learned in it is
   // filed into memory, and the next utterance starts a fresh one.
@@ -231,6 +242,21 @@ applyTimeZone(cfg.timeZone);
 const localDay = (at = new Date()) =>
   `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 
+// A machine that names no brain and is not one becomes both, as `heymorgan
+// serve` makes it: the brain as its own service, keeping this machine's
+// memory, and this daemon its device, a client of localhost. Started again by
+// its service, it comes back as that device. (A whole Morgan in one process is
+// kept for trials, and for a machine where that cannot be done.)
+if (ROLE === "local" && !process.env.HEYMORGAN_ROLE && !TRIAL && process.env.INVOCATION_ID) {
+  try {
+    const { server } = serveHere();
+    console.error(`set up as a brain (heymorgan-brain) and its device, which reaches it at ${server}; starting again as the device`);
+    process.exit(0);
+  } catch (error) {
+    console.error(`could not set up a brain here (${error.message}); running the whole of Morgan in this process`);
+  }
+}
+
 // What this copy does, by its part (see env.mjs). A server has no microphone,
 // speaker, screen or folders of its own: its answers go to the clients as
 // sentences to speak, and looking and reading files wait for clients that can.
@@ -253,9 +279,16 @@ watchFile(configPath, { interval: 1000 }, () => {
   } catch { /* half-written, or gone: keep what we have */ }
 });
 
-const voiceFile = join(SPEECH, "voices", `${cfg.voice}.onnx`);
-let voiceRate = 22050;
-try { voiceRate = JSON.parse(readFileSync(`${voiceFile}.json`, "utf8")).audio.sample_rate; } catch { /* Piper's usual rate */ }
+// What `status` says of speech: whether words can be heard and said, in which
+// voice, and where that is done ("brain", "here", or, for a brain, "service").
+function speechStatus() {
+  if (ROLE === "client" && onBrain("tts")) {
+    const offer = brainOffers ?? {};
+    return { stt: onBrain("stt") ? Boolean(offer.stt) : ownSpeech.ready.stt, tts: Boolean(offer.tts), voice: offer.voice ?? null, engine: offer.engine ?? null, speech: "brain" };
+  }
+  const ready = (brainSpeech ?? ownSpeech).ready;
+  return { stt: ready.stt, tts: ready.tts, voice: ready.voice, engine: ready.engine, speech: ROLE === "server" && cfg.speechUrl ? "service" : "here" };
+}
 
 // What changes from one turn to the next: said with the turn, at the end of
 // what the model reads, and not in its instructions at the start. The server
@@ -275,22 +308,16 @@ const turnNotes = () => [
   memoryInFull() ? "" : `From your memory:\n${picked || "(nothing that bears on this)"}\n\nYour memory topics:\n${topicList()}`,
 ].filter(Boolean).join("\n\n");
 
-// The Kokoro voice runs as a helper that keeps its model loaded.
+// Speech done on this machine: whisper.cpp, Kokoro (kept loaded by a helper)
+// or Piper, and the voice model. A brain does it for its devices, unless a
+// speech service is named (speechUrl), which then does it instead; a device
+// does it for itself only when it is set to, or its brain offers none.
 const KOKORO_SOCKET = process.env.HEYMORGAN_SOCKET ? `${process.env.HEYMORGAN_SOCKET}.tts` : join(RUNTIME, "heymorgan-tts.sock");
-let kokoroHelper = null;
-let kokoroReady = false;
-
-function startKokoro() {
-  if (cfg.engine !== "kokoro" || !existsSync(join(KOKORO, "model.onnx"))) return;
-  const speaker = Math.max(0, KOKORO_VOICES.indexOf(cfg.kokoroVoice));
-  const script = join(fileURLToPath(new URL(".", import.meta.url)), "kokoro.mjs");
-  kokoroHelper = spawn("node", [script, KOKORO_SOCKET, String(speaker), String(cfg.kokoroSpeed)], { stdio: ["ignore", "ignore", "pipe"] });
-  kokoroHelper.stderr.setEncoding("utf8");
-  kokoroHelper.stderr.on("data", (text) => { if (text.includes("kokoro ready")) kokoroReady = true; });
-  kokoroHelper.on("exit", () => { kokoroReady = false; kokoroHelper = null; });
-  kokoroHelper.on("error", () => { kokoroReady = false; kokoroHelper = null; });
-}
-if (DESK) startKokoro();
+const ownSpeech = createSpeech(cfg, { socket: KOKORO_SOCKET });
+// What the brain hears and speaks for its devices with.
+const brainSpeech = !BRAIN ? null : ROLE === "server" && cfg.speechUrl ? remoteSpeech(cfg.speechUrl, cfg.speechKey) : ownSpeech;
+brainSpeech?.start();
+if (ROLE === "client" && cfg.speech === "here") ownSpeech.start();
 
 const morganPrompt = () => [
   `You are ${cfg.name}, a voice assistant on the user's Linux desktop. Everything you write is read aloud by a speech`,
@@ -994,7 +1021,7 @@ function fire(entry) {
   history.push({ role: "assistant", content: line });
   emit({ type: "assistant", text: line });
   // A server has no voice of its own, but its clients do: there it always goes out as sentences to speak.
-  if (!cfg.tts && DESK) return;
+  if (DESK && !canSpeak()) return;
   quiet = false;
   spokenTurn = true;
   setState("thinking");
@@ -1405,6 +1432,8 @@ async function fileTool(name, args) {
 // ---------------------------------------------------------------- events
 
 let state = "idle"; // idle | listening | transcribing | thinking | consulting | speaking
+let muted = false; // this device's microphone, muted by its button (or `heymorgan mute`)
+let lightsHelper = null; // the helper that shows the state on a device's lights (startLights)
 const watchers = new Set();
 
 // The steps taken in the turn in hand (the cards a conversation view shows),
@@ -1443,6 +1472,7 @@ function setState(next) {
   // "Hey Morgan" until the answer came.
   emit({ type: "state", state, typed: quiet && next !== "listening" && next !== "transcribing" });
   bindEscape(next !== "idle");
+  showLights();
 }
 
 // While Morgan is doing anything, Escape stops it. The key is bound only for
@@ -2331,7 +2361,7 @@ const transcript = new Transcript({
   // from when it ran Morgan itself: with the keyring's key changed, reading it
   // had the laptop crash at every start.
   dir: ROLE === "client" ? join(RUNTIME, "heymorgan-client-has-no-transcript")
-    : process.env.HEYMORGAN_MEMORY ? join(MEMORY, "history") : join(SPEECH, "history"),
+    : process.env.HEYMORGAN_MEMORY ? join(MEMORY, "history") : join(SHARE, "history"),
   url: cfg.ollama.url,
   model: cfg.embedModel,
 });
@@ -3403,6 +3433,14 @@ function consultOracle(question, quick = false) {
 
 // ---------------------------------------------------------------- speech out
 
+// Where this device's speech is done: what its brain offered when it let it in
+// ({ stt, tts, voiceprints, ... }), and the `speech` setting. Until the brain
+// has said, it is taken to offer it.
+let brainOffers = null;
+const onBrain = (what) => ROLE === "client" && cfg.speech !== "here" && (cfg.speech === "brain" || !brainOffers || Boolean(brainOffers[what]));
+// Whether this device can say anything at all.
+const canSpeak = () => DESK && (onBrain("tts") || ownSpeech.ready.tts);
+
 let pending = ""; // text received but not yet a whole sentence
 let turnDone = false;
 let quiet = false; // the current turn was typed, so nothing is spoken
@@ -3426,7 +3464,7 @@ function enqueue(sentence) {
   const clean = sentence.replace(/[*_#`>]+/g, "").replace(/\s+/g, " ").trim();
   if (!clean) return;
   emit({ type: "sentence", text: clean });
-  if (!cfg.tts || quiet || !DESK) return;
+  if (quiet || !canSpeak()) return;
   speakText(clean);
 }
 
@@ -3439,7 +3477,7 @@ let voiceEpoch = 0; // bumped to abandon whatever is in hand
 let making = Promise.resolve(); // the queue of sentences being turned into sound
 const ready = []; // in order: { pcm } once made, { pcm: null } while being made
 let player = null;
-let playRate = 22050;
+let playRate = 24000;
 let playEnd = 0; // when what has been handed to the player will have been heard
 let drainTimer = null;
 let levelTimers = [];
@@ -3447,53 +3485,68 @@ let afterSpeech = null; // run once, when a run of speech has played out
 
 const speaking = () => ready.length > 0 || Date.now() < playEnd;
 
-// One sentence as raw 16-bit mono audio.
-function synthesize(text) {
-  return new Promise((resolve) => {
-    const chunks = [];
-    const done = () => resolve(Buffer.concat(chunks));
-    if (kokoroReady) {
-      const source = connect(KOKORO_SOCKET);
-      source.on("data", (chunk) => chunks.push(chunk));
-      source.on("end", done);
-      source.on("error", done);
-      source.end(text + "\n");
-    } else {
-      const synth = spawn("sh", ["-c", "exec " + cfg.tts.replace("{voice}", `'${voiceFile}'`)], { stdio: ["pipe", "pipe", "ignore"] });
-      synth.stdin.on("error", () => {});
-      synth.stdout.on("data", (chunk) => chunks.push(chunk));
-      synth.on("close", done);
-      synth.on("error", done);
-      synth.stdin.end(text + "\n");
-    }
-  });
+// One sentence as raw 16-bit mono audio, and its rate: made by the brain, or here.
+async function synthesize(text) {
+  if (!onBrain("tts")) return ownSpeech.synthesize(text);
+  try {
+    const got = await brainAsk("speak", { text });
+    return { pcm: Buffer.from(String(got.pcm ?? ""), "base64"), rate: Number(got.rate) || 24000 };
+  } catch (error) {
+    // Away from the brain: this device's own voice, if it has one.
+    if (ownSpeech.ready.tts) return ownSpeech.synthesize(text);
+    console.error(`speech: ${error.message}`);
+    return { pcm: Buffer.alloc(0), rate: playRate };
+  }
 }
 
 function speakText(text) {
   for (const [word, said] of Object.entries(cfg.pronunciations)) {
     text = text.replace(new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), said);
   }
-  const job = { pcm: null };
+  const job = { pcm: null, rate: playRate };
   const epoch = voiceEpoch;
   ready.push(job);
-  making = making.then(() => (epoch === voiceEpoch ? synthesize(text) : Buffer.alloc(0))).then((pcm) => {
+  making = making.then(() => (epoch === voiceEpoch ? synthesize(text) : { pcm: Buffer.alloc(0), rate: playRate })).then(({ pcm, rate }) => {
+    job.rate = rate;
     job.pcm = pcm;
     if (epoch === voiceEpoch) pump();
   });
 }
 
+// Sound already made (the "can't reach home" sound), played as speech is.
+function playSound(pcm, rate) {
+  ready.push({ pcm, rate });
+  pump();
+}
+
+// From one rate to another, for sound made at a rate the open player is not at.
+function resample(pcm, from, to) {
+  const count = Math.floor((pcm.length / 2) * to / from);
+  const out = Buffer.alloc(count * 2);
+  const last = pcm.length / 2 - 1;
+  for (let i = 0; i < count; i++) {
+    const at = i * from / to;
+    const low = Math.min(last, Math.floor(at));
+    const high = Math.min(last, low + 1);
+    const value = pcm.readInt16LE(low * 2) * (1 - (at - low)) + pcm.readInt16LE(high * 2) * (at - low);
+    out.writeInt16LE(Math.round(value), i * 2);
+  }
+  return out;
+}
+
 // Hand the player whatever is made and next in line.
 function pump() {
   while (ready.length && ready[0].pcm) {
-    const { pcm } = ready.shift();
-    if (!pcm.length) continue;
+    const { pcm: made, rate } = ready.shift();
+    if (!made.length) continue;
     if (!player) {
-      playRate = kokoroReady ? 24000 : voiceRate;
+      playRate = rate;
       player = spawn("sh", ["-c", "exec " + cfg.play.replace("{rate}", playRate)], { stdio: ["pipe", "ignore", "ignore"] });
       player.stdin.on("error", () => {});
       player.on("error", () => {});
       playEnd = 0;
     }
+    const pcm = rate === playRate ? made : resample(made, rate, playRate);
     if (state === "thinking") setState("speaking");
     const begins = Math.max(Date.now(), playEnd);
     showLevels(pcm, begins - Date.now());
@@ -3547,7 +3600,7 @@ function finishSpeaking() {
   closePlayer();
   if (state !== "thinking" && state !== "speaking") return;
   setState("idle");
-  const invite = spokenTurn && cfg.tts && cfg.followUpSeconds > 0;
+  const invite = spokenTurn && canSpeak() && cfg.followUpSeconds > 0;
   spokenTurn = false;
   if (invite) startActive(cfg.followUpSeconds);
 }
@@ -3605,16 +3658,21 @@ function startCanceller() {
     + ` source.props = { node.name = ${CLEAN_MIC} node.description = "Morgan microphone (echo cancelled)" priority.session = 1 } }\n`);
 }
 
-// Whose voice: null until a model is there to tell.
-let voices = null;
+// Whose voice. Done where this device's speech is: by the brain, which keeps
+// one set for every device and this device's own where it has one; or here,
+// with this device's own set (a whole Morgan, or a device set to do its own).
+let ownVoices = null; // the voices kept here, for speech done here
 const voiceLog = []; // recent checks, for tuning: { t, seconds, name, score, ok }
-let enrolling = null; // { name, vectors, want } while a voice is being taught
+let enrolling = null; // { name, samples, want, scope, aloud } while a voice is being taught
 let recent = []; // the last two seconds from the microphone
+let heardAs = null; // the voice the last accepted speech was in
 
 function startVoices() {
-  if (!voiceprint.available()) return;
-  try { voices = voiceprint.verifier(); } catch (error) { console.error(`voices: ${error.message}`); }
+  if (ROLE === "server") return;
+  try { ownVoices = voiceStore(); } catch (error) { console.error(`voices: ${error.message}`); }
 }
+
+const voicesTaught = () => (onBrain("voiceprints") ? brainOffers?.enrolled?.length ?? 0 : ownSpeech.ready.voiceprints ? ownVoices?.enrolled.length ?? 0 : 0);
 
 // Is this speech in a voice that has been taught? True when none has.
 //
@@ -3626,14 +3684,25 @@ function startVoices() {
 // threshold, "yes" to "shall I go ahead?" was being ignored.
 let lastAccepted = 0;
 
-function recognised(pcm) {
-  if (!voices || !cfg.knownVoicesOnly || !voices.enrolled.length) return true;
+async function recognised(pcm) {
+  if (!cfg.knownVoicesOnly || !voicesTaught()) return true;
   const seconds = pcm.length / 32000;
-  const { name, score } = voices.whose(pcm);
+  let found;
+  try {
+    found = onBrain("voiceprints")
+      ? await brainAsk("whose", { pcm: pcm.toString("base64"), threshold: cfg.voiceThreshold }, 10_000)
+      : ownVoices.whose(await ownSpeech.embed(pcm));
+  } catch (error) {
+    // Away from the brain the turn cannot be answered anyway; let it through to be told so.
+    console.error(`voices: ${error.message}`);
+    return true;
+  }
+  const { name } = found;
+  const score = Number(found.score) || 0;
   let need = cfg.voiceThreshold - (seconds < 1.2 ? 0.18 : seconds < 2.5 ? 0.1 : 0);
   if (Date.now() - lastAccepted < 90_000) need = Math.min(need, 0.18);
   const ok = score >= need;
-  if (ok) lastAccepted = Date.now();
+  if (ok) { lastAccepted = Date.now(); heardAs = name; }
   voiceLog.push({ t: Date.now(), seconds: Number(seconds.toFixed(1)), name, score: Number(score.toFixed(2)), need: Number(need.toFixed(2)), ok });
   if (voiceLog.length > 30) voiceLog.shift();
   emit({ type: "voice", name: ok ? name : null, score: Number(score.toFixed(2)) });
@@ -3641,15 +3710,38 @@ function recognised(pcm) {
 }
 
 // One more sample of the voice being taught; the voiceprint is saved after the last.
-function enrolStep(pcm) {
+async function enrolStep(pcm) {
   const taught = enrolling;
-  if (pcm.length / 32000 >= 1.5) taught.vectors.push(voices.embed(pcm));
-  emit({ type: "enroll", name: taught.name, count: taught.vectors.length, want: taught.want });
-  if (taught.vectors.length < taught.want) return startActive(20);
+  if (pcm.length / 32000 >= 1.5) taught.samples.push(pcm);
+  emit({ type: "enroll", name: taught.name, count: taught.samples.length, want: taught.want });
+  if (taught.samples.length < taught.want) return askForSample();
   enrolling = null;
-  voiceprint.saveVoiceprint(taught.name, taught.vectors);
-  voices.load();
   stopActive();
+  try {
+    let saved = "here";
+    if (onBrain("voiceprints")) {
+      const got = await brainAsk("teach", { name: taught.name, scope: taught.scope, samples: taught.samples.map((sample) => sample.toString("base64")) }, 120_000);
+      saved = got.saved;
+      brainOffers = { ...brainOffers, enrolled: got.enrolled };
+    } else {
+      const vectors = [];
+      for (const sample of taught.samples) vectors.push(await ownSpeech.embed(sample));
+      ownVoices.save(taught.name, vectors);
+    }
+    emit({ type: "enroll", name: taught.name, saved });
+    if (taught.aloud) speakText(saved === "device" ? "Got it. This one knows your voice now." : "Got it. I know your voice now.");
+  } catch (error) {
+    fail(`voices: could not keep ${taught.name}'s voice: ${error.message}`);
+  }
+}
+
+// The next sample: read off the screen, or, taught aloud, said first for the user to say back.
+function askForSample() {
+  if (!enrolling.aloud) return startActive(20);
+  const line = enrolPhrases(cfg)[enrolling.samples.length % 6];
+  setState("speaking");
+  afterSpeech = () => { if (enrolling) startActive(20); };
+  speakText(`${enrolling.samples.length ? "Next" : "Say each line after me"}: ${line}`);
 }
 
 let spot = null;
@@ -3673,7 +3765,7 @@ const interruptWord = () => (cfg.interruptWord === undefined ? cfg.name : cfg.in
 const busy = () => state === "speaking" || state === "thinking" || state === "consulting";
 
 function openMic() {
-  if (mic) return;
+  if (mic || muted) return;
   const command = cfg.record.replace("{target}", canceller ? `--target ${CLEAN_MIC}` : "");
   const child = spawn("sh", ["-c", "exec " + command], { stdio: ["ignore", "pipe", "ignore"] });
   mic = child;
@@ -3717,9 +3809,14 @@ function onFrame(frame) {
       // Either word cuts an answer short; what follows is the user's turn.
       // There is no whole utterance yet to judge the voice by, only the last
       // couple of seconds.
-      if (!recognised(Buffer.concat(recent))) return;
-      emit({ type: "wake" });
-      return startActive(cfg.noSpeechSeconds);
+      if (checkingWake) return;
+      checkingWake = true;
+      recognised(Buffer.concat(recent)).then((ok) => {
+        if (!ok || !busy()) return;
+        emit({ type: "wake" });
+        startActive(cfg.noSpeechSeconds);
+      }).finally(() => { checkingWake = false; });
+      return;
     }
     if (hit && cfg.wakeWord) {
       // The interrupt word is usually part of the wake phrase, and the spotter
@@ -3728,7 +3825,11 @@ function onFrame(frame) {
       wakeHit = Date.now();
       wakeSure = same(hit, cfg.wakeWord);
       // Heard after the utterance had already been let go: nothing came with it.
-      if (wakeSure && !utterance && loudRun === 0 && !checkingWake) { emit({ type: "wake" }); return acknowledge(); }
+      if (wakeSure && !utterance && loudRun === 0 && !checkingWake) {
+        checkingWake = true;
+        chosen(Buffer.concat(recent)).then((go) => { if (go) { emit({ type: "wake" }); acknowledge(); } }).finally(() => { checkingWake = false; });
+        return;
+      }
     }
     if (busy()) return resetUtterance();
   }
@@ -3772,10 +3873,13 @@ function endUtterance() {
     enrolStep(pcm);
   } else if (active) {
     const { said } = active;
-    // Someone else answering in the user's place is not the user's turn.
-    if (!recognised(pcm)) return stopActive();
     stopActive("transcribing");
-    transcribe(pcm).then((text) => { if (state === "transcribing") heard(`${said} ${text}`.trim()); });
+    // Someone else answering in the user's place is not the user's turn. Both asked at once: neither waits on the other.
+    Promise.all([recognised(pcm), transcribe(pcm)]).then(([ok, text]) => {
+      if (state !== "transcribing") return;
+      if (!ok) return setState("idle");
+      heard(`${said} ${text}`.trim());
+    }).catch((error) => lostSpeech(error));
   } else if (busy()) {
     if (!checkingWake) checkInterrupt(pcm);
   } else if (cfg.wakeWord && !checkingWake) {
@@ -3801,7 +3905,7 @@ async function checkInterrupt(pcm) {
     if (STOP.test(words(rest).join(" "))) startActive(cfg.noSpeechSeconds);
     else { spokenTurn = spoken; startActive(cfg.noSpeechSeconds, rest); }
   } catch (error) {
-    fail(error.message);
+    lostSpeech(error);
   } finally {
     checkingWake = false;
   }
@@ -3827,16 +3931,32 @@ function farewell() {
   return lastFarewell;
 }
 
+// Asked of a device by voice, by someone it already knows: learn that voice
+// again, as this device hears it, in place of the set every device shares.
+const LEARN_VOICE = /^(please )?(learn|relearn|get to know|teach yourself|listen to) my voice( again)?( on| for)?( this| here)?( one| device| speaker| dot)?( please)?$/;
+
 // The user's turn, from the microphone.
 function heard(text) {
   if (!text) return setState("idle");
   const plainly = words(text.replace(new RegExp(cfg.name, "gi"), "")).join(" ");
+  if (LEARN_VOICE.test(plainly)) {
+    emit({ type: "user", text });
+    // Only a voice it already knows: anyone else could put theirs in its place.
+    if (!heardAs || !voicesTaught()) {
+      const line = "I can only learn a voice I already know this way. Start it from the settings, or with heymorgan enroll.";
+      emit({ type: "sentence", text: line });
+      setState("speaking");
+      afterSpeech = () => { if (state === "speaking") setState("idle"); };
+      return speakText(line);
+    }
+    try { return enroll(heardAs, { scope: "device", aloud: true }); } catch (error) { return fail(error.message); }
+  }
   if (GOODBYE.test(plainly)) {
     proposals = [];
     emit({ type: "user", text });
     spokenTurn = false;
     // A goodbye is answered in kind; "stop" or "quiet" asks for silence, and gets it.
-    if (!FAREWELL.test(plainly) || !cfg.tts) return setState("idle");
+    if (!FAREWELL.test(plainly) || !canSpeak()) return setState("idle");
     const line = farewell();
     emit({ type: "sentence", text: line });
     setState("speaking");
@@ -3860,12 +3980,14 @@ async function checkWake(pcm, spotted = false) {
     // way: take it to be the opening words, and the rest to be the request.
     command ??= spotted ? opening.split(/\s+/).slice(words(cfg.wakeWord).length).join(" ") : "";
     // A bare wake word is too short to tell a voice by; what is said next is checked.
-    if (command && !recognised(pcm)) return;
+    if (command && !(await recognised(pcm))) return;
+    // Another device in the room may have heard it too: the one that heard it best answers.
+    if (!(await chosen(pcm))) return;
     emit({ type: "wake" });
     if (command) heard(command);
     else acknowledge();
   } catch (error) {
-    fail(error.message);
+    lostSpeech(error);
   } finally {
     checkingWake = false;
   }
@@ -3873,7 +3995,7 @@ async function checkWake(pcm, spotted = false) {
 
 // Answer a bare wake word, then listen for the turn.
 function acknowledge() {
-  if (!cfg.tts || !cfg.wakeReply) return startActive(cfg.noSpeechSeconds);
+  if (!canSpeak() || !cfg.wakeReply) return startActive(cfg.noSpeechSeconds);
   interrupt();
   setState("speaking"); // so the reply is not taken for the user
   afterSpeech = () => { if (state === "speaking") startActive(cfg.noSpeechSeconds); };
@@ -3927,31 +4049,42 @@ function stopActive(next = "idle") {
   setState(next);
 }
 
-let wavCount = 0;
+// What was said, in words: by the brain, or here.
+async function transcribe(pcm) {
+  const prompt = `${cfg.wakeWord ? cfg.wakeWord + ". " : ""}${cfg.name}. ${cfg.sttPrompt}`;
+  if (!onBrain("stt")) return ownSpeech.transcribe(pcm, prompt);
+  try {
+    return String((await brainAsk("transcribe", { pcm: pcm.toString("base64"), prompt }, 60_000)).text ?? "");
+  } catch (error) {
+    if (ownSpeech.ready.stt) return ownSpeech.transcribe(pcm, prompt);
+    throw error;
+  }
+}
 
-function transcribe(pcm) {
-  return new Promise((resolve, reject) => {
-    if (!cfg.stt) return reject(new Error("no speech-to-text command configured (stt)"));
-    const file = join(RUNTIME, `heymorgan-${process.pid}-${wavCount++}.wav`);
-    const header = Buffer.alloc(44);
-    header.write("RIFF", 0); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
-    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
-    header.writeUInt32LE(16000, 24); header.writeUInt32LE(32000, 28); header.writeUInt16LE(2, 32);
-    header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
-    writeFileSync(file, Buffer.concat([header, pcm]));
-    const prompt = `${cfg.wakeWord ? cfg.wakeWord + ". " : ""}${cfg.name}. ${cfg.sttPrompt}`.replace(/'/g, "");
-    const command = cfg.stt.replace("{file}", `'${file}'`).replace("{prompt}", `'${prompt}'`);
-    let out = "";
-    const child = spawn("sh", ["-c", command], { stdio: ["ignore", "pipe", "ignore"] });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (text) => { out += text; });
-    child.on("exit", (code) => {
-      rmSync(file, { force: true });
-      if (code !== 0) return reject(new Error(`speech-to-text exited with code ${code}`));
-      // whisper marks non-speech as [BLANK_AUDIO], (music) and the like
-      resolve(out.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").replace(/\s+/g, " ").trim());
-    });
-  });
+// Speech that could not be made sense of: away from the brain, said so aloud.
+function lostSpeech(error) {
+  if (ROLE === "client" && !homeLink) return cannotReach("I can't reach the server.", true);
+  fail(error.message);
+}
+
+// How well this device heard it: how far the speech stands above the room's own noise.
+function loudness(pcm) {
+  let sum = 0;
+  const count = Math.max(1, pcm.length / 2);
+  for (let i = 0; i + 1 < pcm.length; i += 2) sum += pcm.readInt16LE(i) ** 2;
+  return Number((Math.sqrt(sum / count) / Math.max(floor, 30)).toFixed(2));
+}
+
+// When more than one device heard the wake word, the brain lets the one that
+// heard it best answer, and tells the rest to stand down. Alone, or away from
+// the brain, this device answers.
+async function chosen(pcm) {
+  if (ROLE !== "client" || !homeLink) return true;
+  try {
+    const { go } = await brainAsk("wake", { score: loudness(pcm) }, 1500);
+    if (go === false) console.error("wake: another device heard it better; standing down");
+    return go !== false;
+  } catch { return true; }
 }
 
 // ---------------------------------------------------------------- control socket
@@ -3962,8 +4095,10 @@ function handle(line, socket) {
   // A client answers what concerns its own microphone, speaker and voices,
   // and hands everything else to the server.
   if (ROLE === "client") {
-    const local = ["toggle", "speak", "watch", "voices", "enroll", "forget-voice"].includes(command)
-      || (command === "admin" && /"op"\s*:\s*"(voices?|client)\./.test(line));
+    const local = ["toggle", "speak", "watch", "voices", "forget-voice", "mute"].includes(command) || (command === "enroll" && !rest.includes("--device"))
+      || (command === "admin" && /"op"\s*:\s*"(voices|client)\./.test(line))
+      // The voices to choose from are where speech is made; a preview is heard here, wherever it is made.
+      || (command === "admin" && /"op"\s*:\s*"voice\./.test(line) && (!onBrain("tts") || /"op"\s*:\s*"voice\.preview"/.test(line)));
     if (!local) return clientCommand(command, rest, line, reply);
   }
   switch (command) {
@@ -3982,6 +4117,10 @@ function handle(line, socket) {
       } catch (error) { return reply({ ok: false, error: error.message }); }
       return reply({ ok: false, error: "access add <device> | list | remove <device>" });
     }
+    case "mute":
+      // mute [on | off]: this device's microphone, as the button's hold does.
+      setMuted(rest[0] === "off" ? false : rest[0] === "on" ? true : !muted);
+      return reply({ ok: true, muted });
     case "toggle":
       // While listening: send what has been said so far, or give up if nothing has.
       if (!active) startActive(cfg.noSpeechSeconds);
@@ -3994,7 +4133,7 @@ function handle(line, socket) {
       ask(rest.join(" "));
       return reply({ ok: true, state });
     case "speak":
-      if (cfg.tts) speakText(rest.join(" "));
+      if (canSpeak()) speakText(rest.join(" "));
       return reply({ ok: true, state });
     case "type":
       stopActive();
@@ -4129,14 +4268,27 @@ function handle(line, socket) {
       const done = rate(Number(rest[0]), String(rest[1] ?? "none"));
       return reply(done ? { ok: true } : { ok: false, error: "there is no such exchange" });
     }
-    case "enroll":
-      try { enroll(rest.join(" ").trim()); } catch (error) { return reply({ ok: false, error: error.message }); }
-      return reply({ ok: true, state });
+    case "enroll": {
+      // enroll <name> [--here | --everywhere] [--aloud] [--device <device>]: --here keeps it as this
+      // device's own, --everywhere replaces the shared one; --device starts it on that device, which says the lines.
+      const words = [...rest];
+      const take = (flag) => { const at = words.indexOf(flag); if (at < 0) return false; words.splice(at, 1); return true; };
+      const at = words.indexOf("--device");
+      const device = at >= 0 ? words.splice(at, 2)[1] : "";
+      const scope = take("--everywhere") ? "everywhere" : take("--here") ? "device" : "auto";
+      const aloud = take("--aloud");
+      const name = words.join(" ").trim();
+      return Promise.resolve().then(() => (device ? enrollOn(device, name, scope) : enroll(name, { scope, aloud })))
+        .then(() => reply({ ok: true, state }), (error) => reply({ ok: false, error: error.message }));
+    }
     case "voices":
-      return reply({ ok: true, ...voicesStatus() });
-    case "forget-voice":
-      forgetVoice(rest.join(" "));
-      return reply({ ok: true, ...voicesStatus() });
+      return voicesStatus().then((status) => reply({ ok: true, ...status }));
+    case "forget-voice": {
+      // forget-voice <name> [--everywhere]
+      const everywhere = rest.includes("--everywhere");
+      return forgetVoice(rest.filter((word) => word !== "--everywhere").join(" "), everywhere ? "everywhere" : "auto")
+        .then(voicesStatus).then((status) => reply({ ok: true, ...status }), (error) => reply({ ok: false, error: error.message }));
+    }
     case "admin": {
       // The settings window's requests: { op, args } in, JSON out.
       let request;
@@ -4168,7 +4320,7 @@ function handle(line, socket) {
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
-        stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper", interviewing, memoryHeld: memoryHeld(), mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
+        ...speechStatus(), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", muted, interviewing, memoryHeld: memoryHeld(), mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
       });
     case "watch":
       watchers.add(socket);
@@ -4180,28 +4332,66 @@ function handle(line, socket) {
 }
 
 // Teach a voice: the next six things said are taken as samples of it.
-function enroll(name) {
-  if (!voices) throw new Error("the voice model is not installed");
+// Teach a voice. `scope`: "auto" (the shared set, if it has no voice of that
+// name yet; else this device's own), "device", or "everywhere" (the shared
+// set, replaced). `aloud`: Morgan says each line to repeat (no screen).
+function enroll(name, { scope = "auto", aloud = false } = {}) {
   if (!name) throw new Error("whose voice is it?");
+  if (onBrain("voiceprints") ? !brainOffers?.voiceprints : !ownSpeech.ready.voiceprints) {
+    throw new Error(onBrain("voiceprints") && !homeLink ? "I can't reach the server." : "the voice model is not installed where this device's speech is done");
+  }
   interrupt();
-  enrolling = { name, vectors: [], want: 6 };
-  startActive(20);
+  enrolling = { name, samples: [], want: 6, scope, aloud };
+  askForSample();
 }
 
-function forgetVoice(name) {
-  voiceprint.removeVoiceprint(name);
-  voices?.load();
+// Teach a voice on another device, which says each line for the user to repeat.
+async function enrollOn(device, name, scope = "auto") {
+  if (!name) throw new Error("whose voice is it?");
+  if (ROLE !== "server") {
+    if (device === (CLIENT.device ?? hostname())) return enroll(name, { scope, aloud: true });
+    const flag = scope === "everywhere" ? " --everywhere" : scope === "device" ? " --here" : "";
+    const answer = await remote(`enroll ${name}${flag} --device ${device}`);
+    if (answer?.ok === false) throw new Error(answer.error);
+    return;
+  }
+  const link = [...links].find(([, held]) => held.name === device)?.[0];
+  if (!link) throw new Error(`${device} is not connected`);
+  await askLink(link, "enroll", { name, scope });
 }
 
-const voicesStatus = () => ({
-  installed: Boolean(voices), enrolled: voices?.enrolled ?? [], only: cfg.knownVoicesOnly, threshold: cfg.voiceThreshold, checks: voiceLog,
-});
+// Forget a voice: this device's own, if it has one (and then the shared one is
+// used here again); with "everywhere", the shared one too.
+async function forgetVoice(name, scope = "auto") {
+  if (onBrain("voiceprints")) {
+    const got = await brainAsk("forget", { name, scope }, 10_000);
+    brainOffers = { ...brainOffers, enrolled: got.enrolled };
+    return;
+  }
+  ownVoices?.remove(name);
+}
+
+// What the settings show of the voices this device answers to.
+async function voicesStatus() {
+  const base = { only: cfg.knownVoicesOnly, threshold: cfg.voiceThreshold, checks: voiceLog };
+  if (onBrain("voiceprints")) {
+    try {
+      const got = await brainAsk("voices", {}, 10_000);
+      brainOffers = { ...brainOffers, enrolled: got.enrolled };
+      return { ...base, installed: Boolean(got.installed), where: "brain", enrolled: got.enrolled, prints: got.prints };
+    } catch (error) {
+      return { ...base, installed: false, where: "brain", enrolled: [], prints: [], error: error.message };
+    }
+  }
+  return { ...base, installed: ownSpeech.ready.voiceprints, where: "here", enrolled: ownVoices?.enrolled ?? [],
+    prints: (ownVoices?.prints ?? []).map((print) => ({ name: print.name, t: print.t, own: true })) };
+}
 
 const admin = createAdmin({
   cfg, defaults, LIVE, interruptWord,
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
-  mcpAll, reconnectMcp, enroll, forgetVoice, voicesStatus, logLines,
+  mcpAll, reconnectMcp, enroll, enrollOn, forgetVoice, voicesStatus, logLines,
   garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
   // Which models can see: the chat model, and the one that looks (protocol 1.7, `vision.check`).
   vision: async () => {
@@ -4220,18 +4410,51 @@ const admin = createAdmin({
   client: {
     mcpList: () => ownMcpList(),
     mcpChange: (name, change) => changeOwnMcp(name, change),
-    get: () => ({ role: ROLE, server: CLIENT.server ?? "", device: CLIENT.device ?? hostname(), hasKey: Boolean(CLIENT.key), connected: Boolean(homeLink) }),
-    set({ server, key, device }) {
-      if (!server) {
-        // Local again: this machine's own MCP servers stay; the rest of the file goes.
-        if (CLIENT.mcpServers && Object.keys(CLIENT.mcpServers).length) {
-          writeFileSync(CLIENT_FILE, JSON.stringify({ mcpServers: CLIENT.mcpServers }, null, 2) + "\n", { mode: 0o600 });
-        } else rmSync(CLIENT_FILE, { force: true });
-        return;
-      }
+    // brainHere: this device's brain is on this machine (or this is the brain).
+    get: () => ({
+      role: ROLE, server: CLIENT.server ?? "", device: CLIENT.device ?? hostname(), hasKey: Boolean(CLIENT.key), connected: Boolean(homeLink),
+      brainHere: ROLE === "server" || ROLE === "local" || isHere(CLIENT.server), housed: HOUSED,
+    }),
+    set({ here, server, key, device }) {
+      if (here) return serveHere({ device });
       mkdirSync(dirname(CLIENT_FILE), { recursive: true });
-      // What else the file holds (this machine's MCP servers) is kept.
+      // What else the file holds (this machine's MCP servers, its own settings) is kept.
       writeFileSync(CLIENT_FILE, JSON.stringify({ ...CLIENT, server, key: key || CLIENT.key, device: device || CLIENT.device || hostname() }, null, 2) + "\n", { mode: 0o600 });
+      // A brain this machine kept for itself is put away when its device goes to another.
+      if (!isHere(server)) stopServingHere();
+    },
+  },
+  // A voice heard before it is chosen: made by the brain, when it makes this device's speech, and played here.
+  async preview(engine, voice, text) {
+    if (!onBrain("tts")) return false;
+    const got = await brainAsk("speak", { text, engine, voice }, 60_000);
+    const player = spawn("sh", ["-c", "exec " + cfg.play.replace("{rate}", got.rate)], { stdio: ["pipe", "ignore", "ignore"] });
+    player.stdin.on("error", () => {});
+    player.stdin.end(Buffer.from(String(got.pcm ?? ""), "base64"));
+    return true;
+  },
+  // The devices that may reach this brain: one per key, with whether each is connected and how it hears.
+  devices: {
+    list() {
+      const connected = new Map([...links.values()].map((device) => [device.name, device]));
+      return {
+        listen: brainHost() === "127.0.0.1" ? "local" : "network",
+        housed: HOUSED,
+        devices: access.list().map(({ name, made, used }) => {
+          const device = connected.get(name);
+          return {
+            name, made, used, connected: Boolean(device), kind: device?.kind ?? null, can: device?.can ?? [],
+            ownVoices: ROLE === "server" ? ownSet(name).enrolled : [], hearsPoorly: ROLE === "server" && hearsPoorly(name),
+          };
+        }),
+      };
+    },
+    add: (name) => ({ name, key: access.add(name) }),
+    remove(name) {
+      const gone = access.remove(name);
+      for (const [link, device] of links) if (device.name === name) link.close(4003, "key removed");
+      if (!gone) throw new Error(`no key for ${name}`);
+      return {};
     },
   },
   reminders: {
@@ -4377,8 +4600,134 @@ function offerDeviceTools(link, device) {
   }
 }
 
+// A brain kept in its checkout (the home server) is reached from the network; one in a laptop's session, only
+// from that laptop, unless it is set to let other devices in (`listen`). HOST says outright.
+const brainHost = () => process.env.HOST ?? (HOUSED || cfg.listen === "network" ? "0.0.0.0" : "127.0.0.1");
+
 const access = createAccess(join(process.env.HEYMORGAN_DATA ?? CONFIG_HOME, "access.json"));
 const links = new Map(); // a client's socket -> { name, kind, can }
+
+// ---------------------------------------------------------------- speech, for its devices (on a brain)
+//
+// A device sends what it heard and gets back words; sends a sentence and gets
+// back sound; sends speech and is told whose voice it is. The voices are kept
+// here: one set every device shares, and a device's own for any voice taught
+// again on it, used there in place of the shared one.
+
+const sharedVoices = ROLE === "server" ? voiceStore() : null;
+const deviceVoices = new Map(); // device name -> its own set
+const ownSet = (device) => {
+  if (!deviceVoices.has(device)) deviceVoices.set(device, deviceStore(device));
+  return deviceVoices.get(device);
+};
+// The voices a device answers to: its own, and the shared ones it has none of its own for.
+function voicesFor(device) {
+  const own = ownSet(device);
+  const prints = [...own.prints.map((print) => ({ ...print, own: true })), ...sharedVoices.prints.filter((print) => !own.has(print.name))];
+  return { prints, enrolled: prints.map((print) => print.name), whose: (vector) => closest(prints, vector) };
+}
+// What the brain can do for a device's speech, as it is told when it connects and whenever it changes.
+const speechOffer = (device) => ({ ...brainSpeech.ready, enrolled: voicesFor(device).enrolled });
+
+// How well each device hears the voices it knows: the scores of its longer
+// speech, so that one that hears a voice poorly can be said to (devices.list).
+const heardBy = new Map(); // device name -> [{ score, threshold }]
+function noteHearing(device, score, threshold) {
+  const list = heardBy.get(device) ?? [];
+  list.push({ score, threshold });
+  if (list.length > 20) list.shift();
+  heardBy.set(device, list);
+}
+function hearsPoorly(device) {
+  const list = heardBy.get(device) ?? [];
+  if (list.length < 8) return false;
+  const scores = list.map((entry) => entry.score).sort((a, b) => a - b);
+  const median = scores[Math.floor(scores.length / 2)];
+  // The same person, heard well, scores well clear of the bar; heard poorly, hard against it or under.
+  return median < (list.at(-1).threshold || 0.4) + 0.08;
+}
+
+async function speechFor(link, device, op, args = {}) {
+  const pcm = () => Buffer.from(String(args.pcm ?? ""), "base64");
+  const name = String(args.name ?? "").trim();
+  switch (op) {
+    case "transcribe":
+      return { text: await brainSpeech.transcribe(pcm(), String(args.prompt ?? "")) };
+    case "speak": {
+      const made = await brainSpeech.synthesize(String(args.text ?? ""), { engine: args.engine, voice: args.voice });
+      return { pcm: made.pcm.toString("base64"), rate: made.rate };
+    }
+    case "whose": {
+      const sound = pcm();
+      const found = voicesFor(device.name).whose(await brainSpeech.embed(sound));
+      if (found.name && sound.length / 32000 >= 2.5) noteHearing(device.name, found.score, Number(args.threshold) || cfg.voiceThreshold);
+      return found;
+    }
+    case "teach": {
+      if (!name) throw new Error("whose voice is it?");
+      const vectors = [];
+      for (const sample of Array.isArray(args.samples) ? args.samples : []) vectors.push(await brainSpeech.embed(Buffer.from(String(sample), "base64")));
+      if (!vectors.length) throw new Error("nothing long enough was heard");
+      // The first device a voice is taught on makes the one every device uses; taught again elsewhere, it is that device's own.
+      const shared = args.scope === "everywhere" || (args.scope !== "device" && !sharedVoices.has(name));
+      if (shared) {
+        sharedVoices.save(name, vectors);
+        if (args.scope === "everywhere") ownSet(device.name).remove(name);
+      } else ownSet(device.name).save(name, vectors);
+      heardBy.delete(device.name);
+      console.error(`voices: ${name}'s voice taught on ${device.name}, kept ${shared ? "for every device" : `for ${device.name} only`}`);
+      return { saved: shared ? "shared" : "device", enrolled: voicesFor(device.name).enrolled };
+    }
+    case "seed": {
+      // A voice a device was taught before its brain did its speech: given to the brain, unless the brain has one.
+      if (name && Array.isArray(args.vectors) && args.vectors.length && !sharedVoices.has(name)) {
+        sharedVoices.save(name, args.vectors);
+        console.error(`voices: ${name}'s voice, taught on ${device.name} before, kept for every device`);
+      }
+      return { enrolled: voicesFor(device.name).enrolled };
+    }
+    case "forget": {
+      const own = ownSet(device.name);
+      if (args.scope === "everywhere") { own.remove(name); sharedVoices.remove(name); }
+      else if (own.has(name)) own.remove(name);
+      else sharedVoices.remove(name);
+      return { enrolled: voicesFor(device.name).enrolled };
+    }
+    case "voices": {
+      const { prints, enrolled } = voicesFor(device.name);
+      return { installed: brainSpeech.ready.voiceprints, enrolled, prints: prints.map((print) => ({ name: print.name, t: print.t, own: Boolean(print.own) })) };
+    }
+    case "wake":
+      return arbitrate(link, Number(args.score) || 0);
+    default:
+      throw new Error(`no speech op ${op}`);
+  }
+}
+
+// Two devices, one wake word. Every device that heard it within 300 ms is
+// weighed, the one that heard it best answers, and the rest stand down. A
+// device that hears it a moment after one was chosen stands down at once.
+let contest = null;
+let chosenLast = { at: 0, link: null };
+function arbitrate(link, score) {
+  return new Promise((resolve) => {
+    const listening = [...links.values()].filter((device) => device.can.includes("voice"));
+    if (listening.length <= 1) return resolve({ go: true });
+    if (!contest && Date.now() - chosenLast.at < 2000 && chosenLast.link !== link) return resolve({ go: false });
+    if (!contest) {
+      contest = { entries: [] };
+      setTimeout(() => {
+        const { entries } = contest;
+        contest = null;
+        const best = entries.reduce((a, b) => (b.score > a.score ? b : a));
+        chosenLast = { at: Date.now(), link: best.link };
+        for (const entry of entries) entry.resolve({ go: entry === best });
+        if (entries.length > 1) console.error(`wake: heard by ${entries.map((entry) => `${links.get(entry.link)?.name} (${entry.score})`).join(", ")}; ${links.get(best.link)?.name} answers`);
+      }, 300);
+    }
+    contest.entries.push({ link, score, resolve });
+  });
+}
 
 // What a client is told of the settings: not the services' addresses and keys.
 // What a client is told of the settings: not the services' addresses and keys,
@@ -4408,6 +4757,78 @@ const homeAddress = (address) => {
   return `ws://${text}`;
 };
 
+// Speech asked of the brain (transcribe, speak, whose, teach, wake…), and its answer.
+const speechAsked = new Map(); // id -> its resolve
+let nextSpeech = 0;
+function brainAsk(op, args = {}, wait = 30_000) {
+  if (!homeLink) return Promise.reject(new Error("I can't reach the server."));
+  return new Promise((resolve, reject) => {
+    const id = ++nextSpeech;
+    const timer = setTimeout(() => { speechAsked.delete(id); reject(new Error("the server took too long to answer")); }, wait);
+    speechAsked.set(id, (answer) => {
+      clearTimeout(timer);
+      if (answer.error) reject(new Error(answer.error)); else resolve(answer.result ?? {});
+    });
+    homeLink.send(JSON.stringify({ speech: { id, op, args } }));
+  });
+}
+
+// What the brain offers for this device's speech. Whatever it does not offer
+// (a brain with no speech installed, one from before it did speech) is done
+// here, where this device can.
+function takeOffer(offer) {
+  brainOffers = { stt: false, tts: false, voiceprints: false, enrolled: [], ...offer };
+  const short = ["stt", "tts", "voiceprints"].filter((what) => !brainOffers[what]);
+  if (cfg.speech === "auto" && short.length) {
+    console.error(`speech: the brain does not offer ${short.join(", ")}; done here`);
+    ownSpeech.start();
+  }
+}
+
+// Voices taught on this device before its brain did its speech go to the
+// brain, which keeps them for every device unless it has one of that name.
+async function handOnVoices() {
+  if (!onBrain("voiceprints") || !brainOffers?.voiceprints || !ownVoices?.prints.length) return;
+  for (const print of ownVoices.prints) {
+    if (brainOffers.enrolled.includes(print.name)) continue;
+    try {
+      const got = await brainAsk("seed", { name: print.name, vectors: print.vectors });
+      brainOffers = { ...brainOffers, enrolled: got.enrolled };
+    } catch (error) { console.error(`voices: could not give the brain ${print.name}'s voice: ${error.message}`); }
+  }
+}
+
+// "I can't reach home right now", in Morgan's voice, made by the brain while
+// it can be reached and kept, for when it cannot. A device with no voice of
+// its own (a Pi in a speaker) would otherwise say nothing at all.
+const CANT_REACH_LINE = "I can't reach home right now.";
+const CANT_REACH = join(dirname(CLIENT_FILE), "cant-reach.json");
+async function keepCantReach() {
+  if (!onBrain("tts") || !brainOffers?.tts) return;
+  try {
+    const kept = JSON.parse(readFileSync(CANT_REACH, "utf8"));
+    if (kept.voice === brainOffers.voice && kept.line === CANT_REACH_LINE) return;
+  } catch { /* none yet */ }
+  try {
+    const got = await brainAsk("speak", { text: CANT_REACH_LINE });
+    writeFileSync(CANT_REACH, JSON.stringify({ line: CANT_REACH_LINE, voice: brainOffers.voice, rate: got.rate, pcm: got.pcm }), { mode: 0o600 });
+  } catch (error) { console.error(`speech: could not keep the "can't reach home" sound: ${error.message}`); }
+}
+
+// Two falling tones, for a device that has never heard the brain's voice.
+function tones() {
+  const rate = 16000;
+  const parts = [[660, 0.18], [0, 0.06], [440, 0.28]].map(([hz, seconds]) => {
+    const out = Buffer.alloc(Math.round(rate * seconds) * 2);
+    for (let i = 0; i < out.length / 2; i++) {
+      const fade = Math.min(1, i / 200, (out.length / 2 - i) / 200);
+      out.writeInt16LE(hz ? Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * 9000 * fade) : 0, i * 2);
+    }
+    return out;
+  });
+  return { pcm: Buffer.concat(parts), rate };
+}
+
 // One command to the server, and its reply; a plain failure when it cannot be reached.
 function remote(command, wait = 45_000) {
   if (!homeLink) return Promise.resolve({ ok: false, error: "I can't reach the server." });
@@ -4429,9 +4850,18 @@ async function connectHome() {
     if (message.welcome) {
       homeLink = link;
       console.error(`home: connected to ${CLIENT.server}`);
+      showLights();
+      takeOffer(message.welcome.speech);
       // This machine's MCP servers may have finished starting after the hello went.
       if (deviceMcp.size) link.send(JSON.stringify({ can: abilities(), tools: deviceTools() }));
+      handOnVoices().then(keepCantReach);
       return mirror(message.welcome.config);
+    }
+    if (message.speechOffer) { takeOffer(message.speechOffer); return keepCantReach(); }
+    if (message.speechResult) {
+      const done = speechAsked.get(message.speechResult.id);
+      speechAsked.delete(message.speechResult.id);
+      return done?.(message.speechResult);
     }
     if (message.error) return console.error(`home: ${message.error}`);
     if (message.config) return mirror(message.config);
@@ -4447,18 +4877,22 @@ async function connectHome() {
     if (homeLink === link) {
       homeLink = null;
       console.error(`home: lost the connection to ${CLIENT.server}`);
+      showLights();
     }
     for (const done of replies.values()) done({ ok: false, error: "Lost the connection to the server." });
     replies.clear();
+    for (const done of speechAsked.values()) done({ error: "Lost the connection to the server." });
+    speechAsked.clear();
     if (code === 4003) console.error(`home: the server refused this client's key (${reason}); trying again in a minute`);
     setTimeout(connectHome, code === 4003 ? 60_000 : 3000);
   });
   link.on("error", (error) => console.error(`home: could not reach ${CLIENT.server}: ${error.message}`));
 }
 
-// What this client can do for the server: look through what its settings let it, read its folders, and run its own MCP servers.
-const abilities = () => [...cfg.sight.filter(present).map((source) => `sight:${source}`), ...(cfg.folders.length ? ["files"] : []),
-  ...(deviceMcp.size ? ["mcp"] : [])];
+// What this client can do for the server: hear the wake word (and so be weighed against other devices that
+// heard it), look through what its settings let it, read its folders, and run its own MCP servers.
+const abilities = () => [...(cfg.wakeWord && !muted ? ["voice"] : []), ...cfg.sight.filter(present).map((source) => `sight:${source}`),
+  ...(cfg.folders.length ? ["files"] : []), ...(deviceMcp.size ? ["mcp"] : [])];
 
 // This machine's own MCP servers (client.json), started here and offered to the server.
 const deviceMcp = new Map(); // name -> { client, spec, offered, tools }: every tool it offers, and those not off
@@ -4560,6 +4994,7 @@ async function doForServer(link, { id, name, args = {} }) {
       if (!held.tools.some((tool) => tool.name === args.tool)) throw new Error(`${args.tool} is not one this device offers`);
       return answer({ result: (await held.client.call(String(args.tool), args.arguments ?? {})).slice(0, 8000) });
     }
+    if (name === "enroll") { enroll(String(args.name ?? ""), { scope: String(args.scope ?? "auto"), aloud: true }); return answer({ result: "started" }); }
     if (name === "allowed") return answer({ result: allowed(String(args.path ?? "")) });
     if (name === "find") return answer({ result: await findByWords(String(args.hint ?? "")) });
     if (name === "read") {
@@ -4586,7 +5021,7 @@ function mirror(config) {
   if (before === text) return;
   writeFileSync(MIRROR, text, { mode: 0o600 });
   const fixed = [...new Set([...Object.keys(config), ...Object.keys(user)])]
-    .filter((key) => !LIVE.includes(key) && !(key in DEVICE) && !["mcpServers", "oracle"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
+    .filter((key) => !LIVE.includes(key) && !(key in DEVICE) && !["mcpServers", "oracle", "listen"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
   if (configPath !== MIRROR || fixed.length) {
     console.error(`home: settings changed on the server (${fixed.join(", ") || "first mirror"}); starting again to take them up`);
     setTimeout(() => process.exit(0), 300);
@@ -4607,12 +5042,12 @@ function fromHome(event) {
       return;
     case "sentence":
       emit(event);
-      if (ownSpoken && cfg.tts && !quiet) speakText(event.text);
+      if (ownSpoken && canSpeak() && !quiet) speakText(event.text);
       return;
     case "reminder":
       emit(event);
       // A reminder going off is said aloud by every client that can speak (one set, changed or cancelled is not).
-      if (!event.set && !event.cancelled && cfg.tts) { ownSpoken = true; spokenTurn = true; quiet = false; }
+      if (!event.set && !event.cancelled && canSpeak()) { ownSpoken = true; spokenTurn = true; quiet = false; }
       return;
     case "level":
       return; // the server has no voice of its own to measure
@@ -4645,12 +5080,17 @@ async function askServer(text, { typed = false, files = [] } = {}) {
 function cannotReach(error, aloud) {
   ownSpoken = false;
   emit({ type: "error", message: error });
-  if (aloud && cfg.tts) {
-    quiet = false;
-    setState("thinking");
-    speakText("I can't reach home right now.");
-    finishSpeaking();
-  } else setState("idle");
+  if (!aloud || !DESK) return setState("idle");
+  quiet = false;
+  setState("thinking");
+  // This device's own voice if it has one; else the brain's, kept for this; else two tones.
+  if (ownSpeech.ready.tts) speakText(CANT_REACH_LINE);
+  else {
+    let sound = null;
+    try { const kept = JSON.parse(readFileSync(CANT_REACH, "utf8")); sound = { pcm: Buffer.from(kept.pcm, "base64"), rate: kept.rate }; } catch { sound = tones(); }
+    playSound(sound.pcm, sound.rate);
+  }
+  finishSpeaking();
 }
 
 // A command from the plugin, the window or the terminal that is the server's to answer.
@@ -4686,8 +5126,8 @@ async function clientCommand(command, rest, line, reply) {
   }
   if (command === "status" && answer?.ok) {
     // The server's state, with what this client hears and speaks with.
-    Object.assign(answer, { role: "client", server: CLIENT.server, stt: Boolean(cfg.stt), tts: Boolean(cfg.tts), wakeWord: cfg.wakeWord,
-      wakeEngine: spot ? "spotter" : "transcribe", voice: kokoroReady ? cfg.kokoroVoice : cfg.voice, engine: kokoroReady ? "kokoro" : "piper" });
+    Object.assign(answer, { role: "client", server: CLIENT.server, device: CLIENT.device ?? hostname(), ...speechStatus(), wakeWord: cfg.wakeWord,
+      wakeEngine: spot ? "spotter" : "transcribe", muted });
   }
   if (answer?.ok === false && ["say", "type", "ask"].includes(command)) cannotReach(answer.error, command === "say");
   return reply(answer ?? { ok: false, error: "no answer" });
@@ -4699,10 +5139,21 @@ if (ROLE === "client") {
 }
 
 if (ROLE === "server") {
+  let offered = "";
+  setInterval(() => {
+    const now = JSON.stringify(brainSpeech.ready);
+    if (now === offered) return;
+    offered = now;
+    for (const [link, device] of links) if (link.readyState === 1) link.send(JSON.stringify({ speechOffer: speechOffer(device) }));
+  }, 3000).unref();
+}
+
+if (ROLE === "server") {
   const { WebSocketServer } = await import("ws");
   const port = Number(process.env.PORT);
-  const listener = new WebSocketServer({ port, host: process.env.HOST ?? "0.0.0.0", maxPayload: 32 * 1024 * 1024 });
-  listener.on("listening", () => console.error(`heymorgan serving clients on port ${port}`));
+  const host = brainHost();
+  const listener = new WebSocketServer({ port, host, maxPayload: 32 * 1024 * 1024 });
+  listener.on("listening", () => console.error(`heymorgan serving clients on port ${port}${host === "127.0.0.1" ? ", from this machine only" : ""}`));
   listener.on("error", (error) => console.error(`clients: ${error.message}`));
   listener.on("connection", (link, request) => {
     const from = request.headers["x-forwarded-for"] ?? request.socket.remoteAddress;
@@ -4730,7 +5181,14 @@ if (ROLE === "server") {
         console.error(`clients: ${device.name} connected from ${from}`);
         let saved = {};
         try { saved = JSON.parse(readFileSync(configPath, "utf8")); } catch { /* none yet */ }
-        return link.send(JSON.stringify({ welcome: { name: cfg.name, state, config: forClients(saved) } }));
+        return link.send(JSON.stringify({ welcome: { name: cfg.name, state, config: forClients(saved), speech: speechOffer(device) } }));
+      }
+      if (message.speech) {
+        const { id, op, args } = message.speech;
+        return speechFor(link, device, String(op), args).then(
+          (result) => { if (link.readyState === 1) link.send(JSON.stringify({ speechResult: { id, result } })); },
+          (error) => { if (link.readyState === 1) link.send(JSON.stringify({ speechResult: { id, error: error.message.split("\n")[0] } })); },
+        );
       }
       if (message.abilityResult) {
         const done = askedOf.get(message.abilityResult.id);
@@ -4769,10 +5227,69 @@ if (DESK) {
   startCanceller();
   startSpotter();
   startVoices();
+  startLights();
   // The canceller's microphone takes a moment to appear.
   if (cfg.wakeWord || interruptWord()) setTimeout(openMic, canceller ? 1500 : 0);
 }
 if (BRAIN) connectMcpServers();
+
+// ---------------------------------------------------------------- lights and button
+//
+// A device with lights and a button of its own (a Pi in a speaker, with the
+// Voice Bonnet: pi/lights.py) has a helper, the `lights` setting, that is told
+// Morgan's state, one word a line: idle, listening, transcribing, thinking,
+// consulting, speaking, muted, or offline (away from its brain). It says
+// "press" when the button is pressed, and "hold" when it is held: a press
+// starts listening, or stops an answer; a hold mutes the microphone, or
+// unmutes it.
+
+function startLights() {
+  if (!DESK || !cfg.lights) return;
+  const helper = spawn("sh", ["-c", "exec " + cfg.lights], { stdio: ["pipe", "pipe", "inherit"] });
+  lightsHelper = helper;
+  helper.stdin.on("error", () => {});
+  helper.stdout.setEncoding("utf8");
+  let partial = "";
+  helper.stdout.on("data", (text) => {
+    partial += text;
+    const lines = partial.split("\n");
+    partial = lines.pop();
+    for (const line of lines.map((entry) => entry.trim())) {
+      if (line === "press") pressed();
+      else if (line === "hold") setMuted(!muted);
+    }
+  });
+  helper.on("error", (error) => console.error(`lights: ${error.message}`));
+  helper.on("exit", (code) => {
+    if (lightsHelper !== helper) return;
+    lightsHelper = null;
+    console.error(`lights: the helper stopped (${code}); starting it again shortly`);
+    setTimeout(startLights, 5000);
+  });
+  showLights();
+}
+
+function showLights() {
+  if (!lightsHelper) return;
+  const shown = muted ? "muted" : ROLE === "client" && !homeLink ? "offline" : state;
+  lightsHelper.stdin.write(`${shown}\n`);
+}
+
+const nobody = { end() {}, write() {} };
+function pressed() {
+  if (muted) return setMuted(false);
+  handle(busy() || active ? "stop" : "toggle", nobody);
+}
+
+function setMuted(on) {
+  muted = Boolean(on);
+  if (muted) { stopActive(); closeMic(); } else if (cfg.wakeWord || interruptWord()) openMic();
+  // A muted device heard nothing, so it is not weighed when the wake word is heard elsewhere.
+  if (ROLE === "client" && homeLink?.readyState === 1) homeLink.send(JSON.stringify({ can: abilities() }));
+  emit({ type: "muted", on: muted });
+  showLights();
+  console.error(`microphone: ${muted ? "muted" : "listening again"}`);
+}
 
 // ---------------------------------------------------------------- hotkey
 //
@@ -4791,7 +5308,8 @@ function bindHotkey() {
 
 function watchHyprland() {
   const instance = process.env.HYPRLAND_INSTANCE_SIGNATURE;
-  if (!cfg.hotkey || !instance) return;
+  // The device binds the hotkey; a brain on the same machine leaves it alone.
+  if (!DESK || !cfg.hotkey || !instance) return;
   bindHotkey();
   const events = connect(join(RUNTIME, "hypr", instance, ".socket2.sock"));
   events.setEncoding("utf8");
@@ -4809,7 +5327,9 @@ function shutdown() {
   closeMic();
   bindEscape(false);
   canceller?.kill("SIGTERM");
-  kokoroHelper?.kill("SIGTERM");
+  ownSpeech.stop();
+  brainSpeech?.stop();
+  lightsHelper?.kill("SIGTERM");
   stopSpeech();
   stopOracle();
   for (const client of mcpClients.values()) client.stop();

@@ -46,6 +46,7 @@ local D = {} -- what the daemon last said, by request
 local version = 0 -- bumped whenever D changes, so that text boxes take the new values
 local drafts = {} -- text typed but not yet saved, by field
 local status = "" -- one line of news: saved, failed, restarting
+local newKey: string? = nil -- a device's key, shown the once it is made
 local settle = 0 -- seconds until a restarted daemon is asked again
 local confirming = nil -- the delete button that has been pressed once
 local view = {} -- what is opened up: a topic, a note being edited, a document
@@ -92,7 +93,7 @@ local NEEDS = {
   voice = { "voice.list", "voices.status", "config.get" },
   listening = { "config.get", "reminders.list" },
   files = { "config.get" },
-  connections = { "client.get", "config.get", "oracle.account", "mcp.list", "ollama.models" },
+  connections = { "client.get", "devices.list", "config.get", "oracle.account", "mcp.list", "ollama.models" },
   log = { "log.recent" },
 }
 
@@ -806,8 +807,10 @@ local function connectionsTab()
   local servers = (D["mcp.list"] or {}).servers or {}
   local out = {}
 
-  -- Where Morgan lives: wholly on this laptop, or on the home server with
-  -- this laptop as a client of it. Changing it starts this laptop's Morgan again.
+  -- Where Morgan's brain is: on this laptop, or on another computer (the
+  -- home server). This laptop is a device either way, reaching the brain at
+  -- an address with a key; only the address differs. Changing it starts this
+  -- laptop's Morgan again.
   local place = D["client.get"] or {}
   local function draft(key: string, value: string?): string
     return if drafts[key] ~= nil then drafts[key] else (value or "")
@@ -823,24 +826,75 @@ local function connectionsTab()
       }),
     })
   end
-  table.insert(out, card(`Where {who()} lives`, {
-    hint(if place.role == "client"
-      then `On the server at {place.server}, as {place.device}; {if place.connected then "connected" else "not reachable just now"}.`
-      elseif place.role == "server" then "This is the server."
-      else "Wholly on this laptop. Give a server's address and a key from it to make this laptop one of its clients."),
-    input("home.server", "Server", place.server, "home-server:8790, or https://your-tailnet-name/heymorgan"),
-    input("home.key", "Key", "", if place.hasKey then "(kept; paste a new one to replace it)" else "hc_… from `heymorgan access add <device>` on the server"),
+  local here = place.brainHere == true
+  table.insert(out, card(`Where {who()}'s brain is`, {
+    hint(if place.role == "server" then "This is the brain. Its devices reach it with a key each."
+      elseif place.role == "local" then "Wholly in one program here, as before there were devices. Keep the brain on this laptop to set it up as a brain with this laptop as its first device."
+      elseif here then `On this laptop; this laptop is {place.device} to it, {if place.connected then "connected" else "not reachable just now"}.`
+      else `On {place.server}; this laptop is {place.device} to it, {if place.connected then "connected" else "not reachable just now"}.`),
+    input("home.server", "Brain elsewhere", if here then "" else place.server, "home-server:8790, or https://your-tailnet-name/heymorgan"),
+    input("home.key", "Key", "", if place.hasKey and not here then "(kept; paste a new one to replace it)" else "hc_… from the brain: heymorgan devices add <device>"),
     input("home.device", "This device's name", place.device, "laptop"),
     ui.row({ gap = 8 }, {
-      ui.button({ text = "Use this server", glyph = "plug-connected", variant = "secondary", controlSize = "sm", onClick = function()
-        change("client.set", { server = draft("home.server", place.server), key = draft("home.key", ""), device = draft("home.device", place.device) },
-          `Saved. {who()} is starting again as a client of that server…`)
+      ui.button({ text = "Use the brain there", glyph = "plug-connected", variant = "secondary", controlSize = "sm", visible = place.role ~= "server", onClick = function()
+        change("client.set", { server = draft("home.server", if here then "" else place.server), key = draft("home.key", ""), device = draft("home.device", place.device) },
+          `Saved. {who()} is starting again, using that brain…`)
       end }),
-      ui.button({ text = "Run wholly on this laptop", glyph = "device-laptop", variant = "ghost", controlSize = "sm", visible = place.role == "client", onClick = function()
-        change("client.set", { server = "" }, `Saved. {who()} is starting again on this laptop…`)
+      ui.button({ text = "Keep the brain on this laptop", glyph = "device-laptop", variant = "ghost", controlSize = "sm", visible = place.role == "local" or (place.role == "client" and not here), onClick = function()
+        change("client.set", { here = true, device = draft("home.device", place.device) }, `Saved. {who()}'s brain is starting on this laptop…`)
       end }),
     }),
   }))
+
+  -- The devices that may reach the brain, wherever it is: a key each.
+  local devices = D["devices.list"] or {}
+  if devices.ok then
+    local lines = {}
+    for _, device in ipairs(devices.devices or {}) do
+      local said = if device.connected then `connected{if device.kind then `, {device.kind}` else ""}` else "not connected"
+      if device.ownVoices and #device.ownVoices > 0 then
+        said ..= `; its own voices: {table.concat(device.ownVoices, ", ")}`
+      end
+      if device.hearsPoorly then
+        said ..= `; hears you poorly (heymorgan enroll <name> --here --device {device.name})`
+      end
+      table.insert(lines, ui.row({ gap = 8, align = "center" }, {
+        ui.label({ text = `{device.name}{if device.name == place.device then " (this one)" else ""}: {said}`, color = "on_surface", fontSize = 12, flexGrow = 1 }),
+        ui.button({ text = "Remove", variant = "ghost", controlSize = "sm", visible = device.name ~= place.device, onClick = function()
+          change("devices.remove", { name = device.name }, `{device.name} removed.`)
+        end }),
+      }))
+    end
+    if #lines == 0 then
+      table.insert(lines, hint("No devices yet."))
+    end
+    table.insert(lines, input("devices.new", "Add a device", "", "kitchen-dot"))
+    table.insert(lines, ui.row({ gap = 8 }, {
+      ui.button({ text = "Add, and show its key", glyph = "key", variant = "secondary", controlSize = "sm", onClick = function()
+        call("devices.add", { name = draft("devices.new", "") }, function(answer)
+          if answer.ok then
+            local where = if here or place.role == "server" then "<this laptop's address>:8790" else place.server
+            newKey = `On {answer.name}, run (shown only now): heymorgan connect {where} {answer.key} {answer.name}`
+            status = `{answer.name} added.`
+          else
+            status = `That did not work: {answer.error}`
+          end
+          refresh()
+        end)
+      end }),
+      ui.button({
+        text = if devices.listen == "network" then "Let in only this laptop" else "Let other devices in",
+        variant = "ghost", controlSize = "sm", visible = (here or place.role == "server") and not devices.housed,
+        onClick = function()
+          set({ listen = if devices.listen == "network" then "local" else "network" })
+        end,
+      }),
+    }))
+    if newKey then
+      table.insert(lines, hint(newKey))
+    end
+    table.insert(out, card("Devices", lines))
+  end
 
   local chat = {}
   for _, model in ipairs(models.chat or {}) do

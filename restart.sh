@@ -19,16 +19,21 @@ for name in heymorgan heyclaude; do
     ctl() { sudo systemctl "$@"; }; where="system service"; unit=$name; break
   fi
 done
+# A laptop with its own brain runs it beside the device (heymorgan serve): both go down and come up together.
+brain=""
+if [ "$where" = "user service" ] && systemctl --user cat heymorgan-brain.service >/dev/null 2>&1; then brain=heymorgan-brain; fi
+
 if [ -z "$unit" ]; then
   echo "==> No Morgan service is installed here. See systemd/ for the unit." >&2
   exit 1
 fi
 
 # If any step below fails, don't walk away leaving Morgan stopped.
-trap 'echo "==> FAILED — bringing $unit back up on the previous state"; ctl start "$unit" || true' ERR
+trap 'echo "==> FAILED — bringing $unit back up on the previous state"; [ -n "$brain" ] && ctl start "$brain"; ctl start "$unit" || true' ERR
 
 echo "==> Stopping $unit ($where)…"
 ctl stop "$unit" || true
+[ -n "$brain" ] && { echo "==> Stopping $brain…"; ctl stop "$brain" || true; }
 
 echo "==> Pulling latest…"
 git pull --ff-only
@@ -41,6 +46,7 @@ echo "==> Checking it parses…"
 # A syntax error would otherwise only show as a service that keeps restarting.
 for file in *.mjs bin/heymorgan; do node --check "$file"; done
 
+if [ -n "$brain" ]; then echo "==> Starting $brain…"; ctl start "$brain"; sleep 1; fi
 echo "==> Starting $unit…"
 ctl start "$unit"
 sleep 2

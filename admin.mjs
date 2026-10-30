@@ -50,7 +50,8 @@ function oracleAccount(claude) {
 // otherwise be enough to run anything on the server, and through the settings
 // mirrored to clients, on every client too.
 // The Oracle's model may still be chosen from a client; its program and tools may not.
-export const LOCAL_ONLY = /^(tts|play|record|camera|oracle|oracle\.(claude|tools|allowedTools)(\..*)?|mcpServers(\..*)?)$/;
+// Nor where a brain sends what its devices hear (speechUrl), or the key it gives there.
+export const LOCAL_ONLY = /^(tts|stt|play|record|camera|lights|speechUrl|speechKey|oracle|oracle\.(claude|tools|allowedTools)(\..*)?|mcpServers(\..*)?)$/;
 
 export function createAdmin(d) {
   const sample = () => `Hello, I'm ${d.cfg.name}. This is how I would sound.`;
@@ -92,17 +93,26 @@ export function createAdmin(d) {
 
     // ------------------------------------------------------------ memory
     // ------------------------------------------------------------ where Morgan lives
-    // Here, or on a server this machine is a client of. Changing it starts this machine's Morgan again.
+    // Where this device's brain is: on this machine, or at an address elsewhere. Changing it starts this machine's Morgan again.
     "client.get": () => d.client.get(),
-    "client.set": ({ server = "", key = "", device = "" } = {}) => {
+    // { here: true }: the brain on this machine (`heymorgan serve`); { server, key }: the brain at that address.
+    "client.set": ({ here = false, server = "", key = "", device = "" } = {}) => {
       server = String(server).trim();
       key = String(key).trim();
-      if (server && !key && !d.client.get().hasKey) throw new Error("A server needs a key: run `heymorgan access add <device>` on the server.");
-      if (key && !key.startsWith("hc_")) throw new Error("That is not a key the server issued (they start hc_).");
-      d.client.set({ server, key, device: String(device).trim() });
+      if (!here && server) {
+        if (!key && !d.client.get().hasKey) throw new Error("A brain elsewhere needs a key: run `heymorgan access add <device>` there, or add a device in its settings.");
+        if (key && !key.startsWith("hc_")) throw new Error("That is not a key a brain issued (they start hc_).");
+      }
+      d.client.set({ here: here || !server, server, key, device: String(device).trim() });
       d.restartSoon();
       return { restart: true };
     },
+
+    // ------------------------------------------------------------ devices (on a brain)
+    // Every device that may reach this brain: a key each, connected or not. A new key is shown once.
+    "devices.list": () => d.devices.list(),
+    "devices.add": ({ name }) => d.devices.add(String(name ?? "").trim()),
+    "devices.remove": ({ name }) => d.devices.remove(String(name ?? "").trim()),
 
     // ------------------------------------------------------------ the log
     "log.recent": ({ count = 200 } = {}) => ({
@@ -185,7 +195,8 @@ export function createAdmin(d) {
       kokoro: KOKORO_VOICES,
       piper: existsSync(VOICES) ? readdirSync(VOICES).filter((file) => file.endsWith(".onnx")).map((file) => file.slice(0, -5)).sort() : [],
     }),
-    "voice.preview": ({ engine, voice }) => {
+    "voice.preview": async ({ engine, voice }) => {
+      if (await d.preview(engine, voice, sample())) return {};
       if (engine === "kokoro") {
         spawn("node", [join(HERE, "kokoro.mjs"), "--say", String(Math.max(0, KOKORO_VOICES.indexOf(voice))), String(d.cfg.kokoroSpeed), sample()], { stdio: "ignore", detached: true }).unref();
       } else {
@@ -199,8 +210,14 @@ export function createAdmin(d) {
 
     // ------------------------------------------------------------ voices heard
     "voices.status": () => d.voicesStatus(),
-    "voices.enroll": ({ name }) => { d.enroll(name); return {}; },
-    "voices.forget": ({ name }) => { d.forgetVoice(name); return d.voicesStatus(); },
+    // scope: "auto" (shared, unless that voice is taught already; then this device's own), "device", "everywhere".
+    // device: teach it on that device, which says each line aloud (a Dot with no screen).
+    // aloud: Morgan says each line to repeat, rather than the settings showing them.
+    "voices.enroll": async ({ name, scope = "auto", device = "", aloud = false }) => {
+      if (device) await d.enrollOn(String(device), String(name ?? ""), scope); else d.enroll(String(name ?? ""), { scope, aloud: Boolean(aloud) });
+      return {};
+    },
+    "voices.forget": async ({ name, scope = "auto" }) => { await d.forgetVoice(String(name ?? ""), scope); return d.voicesStatus(); },
 
     // ------------------------------------------------------------ connections
     "ollama.models": async ({ url }) => {

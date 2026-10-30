@@ -2,17 +2,27 @@
 // Copyright (c) 2026 Jeff Moore
 // Which part this copy of Morgan plays, settled before anything else looks.
 //
-//   local   the whole of Morgan on this machine (the laptop, as it has been)
-//   server  the brain only, on the home server: no microphone, no desktop; it
-//           listens on PORT for clients, and keeps its data in the checkout's
-//           data/ folder
-//   client  ears and mouth only: it hands what is said to a server and speaks
-//           what comes back; the plugin, the window and the command talk to it
-//           as they always have
+//   server  the brain: memory, the model, the Oracle, reminders, and speech for
+//           its devices. No microphone, no desktop. It listens on PORT for
+//           devices, however many: one, the laptop it shares, or ten.
+//   client  a device: the microphone, the wake word, the speaker, the screen
+//           and folders it may offer. It reaches a brain at an address, with
+//           a key. The plugin, the window, Talaris and the command talk to it.
 //
-// A .env in the checkout giving PORT makes a server, as the other apps on the
-// home server are configured. A ~/.config/heymorgan/client.json naming a
-// server makes a client. HEYMORGAN_ROLE says outright, for trials.
+// A laptop with its own brain runs both, as two services: the brain
+// (heymorgan-brain, `heymorgan serve`) and the device, a client of
+// localhost:8790. A Pi or a second laptop is the same device, with another
+// address. That is the only difference.
+//
+// A .env in the checkout giving PORT makes a server kept in that checkout, as
+// the other apps on the home server are configured: its data in data/. A brain
+// started in someone's session (HEYMORGAN_ROLE=server, from heymorgan-brain)
+// keeps that account's usual folders and login keyring. A client.json naming a
+// server makes a client.
+//
+//   local   the whole of Morgan in one process, as it was before there were
+//           devices: kept for trials (tests/trial.sh), and for a machine not
+//           yet set up, which `heymorgan serve` turns into brain and device.
 import { existsSync, lstatSync, readFileSync, renameSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,10 +67,14 @@ export const SHARE = folder(join(homedir(), ".local", "share"));
 export const TRIAL = Boolean(process.env.HEYMORGAN_CONFIG);
 
 const dotenv = join(ROOT, ".env");
+const fromDotenv = new Set();
 if (existsSync(dotenv)) {
   for (const line of readFileSync(dotenv, "utf8").split("\n")) {
     const found = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (found && !(found[1] in process.env)) process.env[found[1]] = found[2].replace(/^(["'])(.*)\1$/, "$2");
+    if (found && !(found[1] in process.env)) {
+      process.env[found[1]] = found[2].replace(/^(["'])(.*)\1$/, "$2");
+      fromDotenv.add(found[1]);
+    }
   }
 }
 
@@ -82,9 +96,16 @@ if (ROLE === "client" && existsSync(MIRROR)) process.env.HEYMORGAN_CONFIG ??= MI
 // keeps its key (which seals only the voices taught to it) in a file only its
 // account can read.
 export const HEADLESS = process.env.HEYMORGAN_HEADLESS === "1";
-if (HEADLESS && ROLE !== "server") process.env.HEYMORGAN_KEY_FILE ??= join(CONFIG_HOME, "device.key");
+if (HEADLESS && !HOUSED) process.env.HEYMORGAN_KEY_FILE ??= join(CONFIG_HOME, "device.key");
 
-if (ROLE === "server") {
+// A brain kept in its checkout (the home server's), or one in someone's session (a laptop's own).
+export const HOUSED = ROLE === "server" && (fromDotenv.has("PORT") || Boolean(process.env.HEYMORGAN_DATA));
+const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
+// The brain's command socket where it shares a machine with a device, whose is heymorgan.sock.
+export const BRAIN_SOCKET = join(RUNTIME, "heymorgan-brain.sock");
+if (ROLE === "server" && !HOUSED) process.env.HEYMORGAN_SOCKET ??= BRAIN_SOCKET;
+
+if (HOUSED) {
   const data = process.env.HEYMORGAN_DATA ?? join(ROOT, "data");
   process.env.HEYMORGAN_DATA = data;
   process.env.HEYMORGAN_CONFIG ??= join(data, "config.json");

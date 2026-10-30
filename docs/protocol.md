@@ -1,10 +1,25 @@
 # Morgan's client protocol
 
-**Version 1.10**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
-`admin.mjs`, `env.mjs`, `access.mjs`). It describes what the daemon does, not
+**Version 1.11**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+`admin.mjs`, `env.mjs`, `access.mjs`, `speech.mjs`, `speaker.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.11** (2026-10-30): **brain and device.** Wherever the brain runs it is
+  a server, for however many devices: a laptop with its own brain runs it as a
+  second service (`heymorgan serve`, heymorgan-brain) and its device reaches it
+  at `localhost:8790` with a key, as a Pi reaches the home server; only the
+  address differs (§5). **Speech on the brain:** a device sends what it heard
+  and gets back words, sends a sentence and gets back sound (`speech` messages,
+  §6), unless it is set to do its own (`speech`). **Voices on the brain:** one
+  set every device shares, made by the first device a voice is taught on, and a
+  device's own for a voice taught again there (`enroll --here`, `--everywhere`,
+  `--device`; `voices` says `where` and each print's `own`). **Two devices, one
+  wake word:** the brain lets the one that heard it best answer (`wake`, §6).
+  **Devices:** `devices.list`, `devices.add`, `devices.remove`; `client.get`
+  says `brainHere` and `housed`; `client.set` takes `here: true`. **A device's
+  button and lights:** `mute`, the `lights` setting, and a `muted` event.
+  `status` says `speech` and `muted`.
 - **1.10** (2026-10-27): `reminders` (and `reminders.list`, `reminders.cancel`)
   say `now`, the clock `at` and `made` are on. A client counting a timer down
   on its own clock was off by as much as the two clocks differ (14 seconds,
@@ -49,14 +64,15 @@ surprise someone building on it, a **Note** says so.
 - **1.0** (2026-10-23): first written down.
 
 Everything that is not Morgan's brain — the Noctalia plugin, the conversation
-window, the `heymorgan` command, Talaris, a satellite such as the planned Echo
-Dot — talks to the daemon in one of two ways:
+window, the `heymorgan` command, Talaris, a speaker such as the Echo Dot —
+talks to the daemon in one of two ways:
 
 1. **The local socket** (§1–§4): a Unix socket on the same machine. This is what
-   every face uses, whichever role (§5) the daemon on that machine plays.
-2. **The server link** (§6): a WebSocket from a client daemon to a server
-   daemon. A face never needs it — the local daemon in the client role speaks it
-   on the face's behalf — but a satellite with no daemon of its own would.
+   every face uses: it reaches that machine's device daemon, whether the brain
+   is on the same machine or another.
+2. **The server link** (§6): a WebSocket from a device daemon to its brain. A
+   face never needs it — the device daemon speaks it on the face's behalf — but
+   a device with no daemon of its own would.
 
 ## Versioning
 
@@ -232,19 +248,20 @@ conversation that was nothing else); `recent` and `threads` do not.
 
 | Command | Does | Reply |
 |---|---|---|
-| `voices` | — | `{ ok, installed, enrolled: [name…], only, threshold, checks: [{ t, seconds, name, score, need, ok }] }`. `only` is whether voices not taught are ignored; `checks` the last 30 voice checks. |
-| `enroll <name>` | Teach a voice: the next six things said (each at least 1.5 s) are taken as samples, then the voiceprint is saved. Starts listening. Emits `enroll` as it goes. | `{ ok, state }`, or `{ ok: false, error }` when the voice model is not installed or no name was given |
-| `forget-voice <name>` | Delete a voiceprint. | As `voices` |
+| `voices` | — | `{ ok, installed, where, enrolled: [name…], prints: [{ name, t, own }], only, threshold, checks: [{ t, seconds, name, score, need, ok }] }`. `where` (1.11) is `brain` when the brain checks this device's voices, `here` when the device does; `own` marks a voice taught for this device only, used here in place of the shared one. `only` is whether voices not taught are ignored; `checks` the last 30 voice checks. |
+| `enroll <name> [--here \| --everywhere] [--aloud] [--device <device>]` | Teach a voice: the next six things said (each at least 1.5 s) are taken as samples, then the voiceprint is saved. Starts listening. Emits `enroll` as it goes, and `{ type: "enroll", name, saved }` at the end (`shared`, `device` or `here`). With the brain checking voices (1.11), a voice not yet taught anywhere is kept for every device; one taught already is kept as this device's own; `--here` keeps it as this device's own regardless, `--everywhere` replaces the shared one. `--aloud`: Morgan says each line for its person to repeat. `--device`: started on that device, which says the lines (one with no screen). | `{ ok, state }`, or `{ ok: false, error }` when the voice model is not installed where the device's speech is done, the brain cannot be reached, or no name was given |
+| `forget-voice <name> [--everywhere]` | Delete a voiceprint: this device's own if it has one (the shared one is then used here again), otherwise the shared one; `--everywhere`, both. | As `voices` |
+| `mute [on\|off]` | This device's microphone (1.11), as a speaker's button held down does; no argument flips it. A muted device does not listen, and is not weighed when other devices hear the wake word. Emits `muted`. | `{ ok, muted }` |
 
 ### Reminders, status, settings
 
 | Command | Reply |
 |---|---|
 | `reminders` | `{ ok, now, reminders: [{ id, at, text, made, when }] }`, soonest first. `now` (1.10) is the answering machine's clock, which `at` and `made` are on: time left is `at - now`, not `at` less a client's own clock. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
-| `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. A client daemon adds `role: "client"` and `server`, and answers `stt`, `tts`, `wakeWord`, `wakeEngine`, `voice` and `engine` for itself (§5). |
+| `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. `speech` (1.11) is where this machine's speech is done: `brain`, `here`, or, for a brain, `service` (a speech service does it). `muted` (1.11) is the device's microphone. A device daemon adds `role: "client"`, `server` and `device`, and answers `stt`, `tts`, `voice` and `engine` from what its brain offers when the brain does its speech, `wakeWord` and `wakeEngine` for itself (§5). |
 | `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Or `{ "text": "…", "name"?: "…", "what"?: "file" \| "project" }`: a file's words described in two or three sentences by the chat model — what it is and what it is about; with `"what": "project"`, a project's tasks, done and to do, described as what the project is for and covers (1.9). Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model, what }` (`what` from 1.9), or `{ ok: false, error }` |
 | `admin <json>` | `{ "op": "…", "args": { … } }`: see §4. |
-| `access add <device>` \| `access list` \| `access remove <device>` | On a server only (§6). `add`: `{ ok, name, key }`, the key shown this once. `list`: `{ ok, keys: [{ name, made, used }] }`. `remove`: `{ ok }`, or `{ ok: false, error: "no key for <device>" }`; a removed key's connection is closed at once. Anywhere else: `{ ok: false, error: "only a server issues access keys" }`. |
+| `access add <device>` \| `access list` \| `access remove <device>` | On a brain (§6); a device forwards it to its brain. (`devices.*`, §4, says the same with whether each is connected.) `add`: `{ ok, name, key }`, the key shown this once. `list`: `{ ok, keys: [{ name, made, used }] }`. `remove`: `{ ok }`, or `{ ok: false, error: "no key for <device>" }`; a removed key's connection is closed at once. Anywhere else: `{ ok: false, error: "only a server issues access keys" }`. |
 | `watch` | No reply: the connection becomes an event stream (§3). |
 
 ## 3. Events (`watch`)
@@ -260,7 +277,8 @@ missed while not connected is gone (use `recent` to catch up on the record).
 | `wake` | — | The wake word or the interrupt word was heard. |
 | `level` | `who`: `user` \| `morgan`, `value`: 0–1 | The loudness of the microphone while listening (every other block of audio), or of Morgan's voice while speaking (every 50 ms, timed to the playback). A `morgan` value of 0 marks the end of Morgan's speech. |
 | `voice` | `name` (or `null`), `score` | A voice check, when only known voices are listened to: whose voice it was, and whether it passed (`name` is `null` if not). |
-| `enroll` | `name`, then `count` and `want`, or `cancelled: true` | A sample of a voice being taught was taken, or the teaching was stopped. |
+| `enroll` | `name`, then `count` and `want`, or `cancelled: true`, or `saved` (1.11: `shared`, `device` or `here`) | A sample of a voice being taught was taken, the teaching was stopped, or the voice was kept. |
+| `muted` | `on` (1.11) | The device's microphone was muted or unmuted (its button, or `mute`). |
 | `user` | `text`, `at`, `when` | What the user said or typed, as Morgan took it. Attached files are listed after the text, each on a line starting "📎 ". |
 | `kind` | `kind`, and any of `follows`, `lookup`, `sum`, `oracle`, `change`, `reminder`, `keep`, `look`, `earlier`, `files` that are true | How the turn was sorted. Diagnostic; not meant for display. |
 | `partial` | `text` | The answer so far, as the model writes it, at most every 120 ms. Each replaces the last; it is not a delta. |
@@ -328,12 +346,35 @@ had. On a client the server's setting is the one that counts.
 
 | Op | Args | Reply fields |
 |---|---|---|
-| `client.get` | — | `role`, `server`, `device`, `hasKey`, `connected` |
-| `client.set` | `server`, `key`, `device` | `restart: true` |
+| `client.get` | — | `role`, `server`, `device`, `hasKey`, `connected`, `brainHere`, `housed` |
+| `client.set` | `here: true`, or `server`, `key`; and `device` | `restart: true` |
 
-`client.set` with an empty `server` deletes `client.json` (this machine runs the
-whole of Morgan again); otherwise it writes it, keeping the old key if none is
-given. A key must start `hc_`. It always restarts the daemon.
+`brainHere` (1.11) is whether this device's brain is on this machine (its
+`server` is `localhost`, `127.0.0.1`, `::1` or this machine's name), or this is
+the brain. `housed`: this is a brain kept in its checkout (the home server).
+
+`client.set` with `here: true` (or, as before 1.11, an empty `server`) puts the
+brain on this machine, as `heymorgan serve` does: heymorgan-brain installed
+and started, a key made for this device, and `client.json` pointed at
+`localhost:8790`. With a `server`, it writes `client.json`, keeping the old key
+if none is given, and stops a brain this machine kept for itself. A key must
+start `hc_`. It always restarts the daemon.
+
+### Devices (1.11)
+
+Asked of the brain, wherever it is; a device forwards them.
+
+| Op | Args | Reply fields |
+|---|---|---|
+| `devices.list` | — | `listen` (`local`: only devices on the brain's own machine; `network`), `housed`, `devices: [{ name, made, used, connected, kind, can, ownVoices: [name…], hearsPoorly }]` — one per key |
+| `devices.add` | `name` | `name`, `key`, shown this once |
+| `devices.remove` | `name` | — (its connection is closed at once) |
+
+`hearsPoorly` is set once a device's longer speech in a voice it knows keeps
+scoring close to the bar: teach that voice again there (`enroll --here --device`).
+A brain in a laptop's session lets in only that laptop's devices until
+`listen` is set to `network` (a `config.set`, which restarts the brain); a brain
+kept in its checkout goes by `HOST` in its `.env`.
 
 ### Memory
 
@@ -376,11 +417,11 @@ Memory ops emit no events.
 
 | Op | Args | Reply fields |
 |---|---|---|
-| `voice.list` | — | `kokoroInstalled, engine, kokoroVoice, kokoroSpeed, piperVoice, kokoro: [name…], piper: [name…]` |
-| `voice.preview` | `engine`: `kokoro` \| other, `voice` | — (plays a sample on this machine's speaker) |
+| `voice.list` | — | `kokoroInstalled, engine, kokoroVoice, kokoroSpeed, piperVoice, kokoro: [name…], piper: [name…]`: the voices where this device's speech is made (the brain's, when it makes it) |
+| `voice.preview` | `engine`: `kokoro` \| other, `voice` | — (made where this device's speech is made, played on this device's speaker) |
 | `voices.status` | — | as the `voices` command |
-| `voices.enroll` | `name` | — (as `enroll`) |
-| `voices.forget` | `name` | as `voices.status` |
+| `voices.enroll` | `name`, `scope` (`auto` \| `device` \| `everywhere`), `device`, `aloud` | — (as `enroll`) |
+| `voices.forget` | `name`, `scope` (`auto` \| `device` \| `everywhere`) | as `voices.status` |
 
 Switching voice is a `config.set` of `engine`, `kokoroVoice` or `voice`, which
 restarts the daemon.
@@ -414,41 +455,63 @@ what it offers the server, which is told at once.
 **Note:** `mcp.add` with `command` starts that command on the daemon's machine.
 Anything that can send `admin` can run programs as the user.
 
-## 5. Roles: local, server, client
+## 5. Brain and device
+
+Every Morgan has a **brain** — memory, the model, the Oracle, reminders, the
+voices it knows, and speech for its devices — and one or more **devices**: the
+microphone, the wake word, the speaker, and a screen, folders or tools it may
+offer. A face always talks to its machine's device daemon. The device reaches
+its brain over the server link (§6) at an address, with a key, whether the
+brain is the home server or the same laptop: **only the address differs**.
+Wherever a brain runs it is a server, for however many devices it has, one or
+ten.
+
+A laptop with its own brain runs both, as two user services:
+`heymorgan-brain` (the brain, `HEYMORGAN_ROLE=server`, `PORT=8790`, socket
+`$XDG_RUNTIME_DIR/heymorgan-brain.sock`, this account's usual folders and
+login keyring) and `heymorgan` (the device, a client of `localhost:8790`).
+`heymorgan serve` (or `client.set` with `here: true`) sets that up. The home
+server runs only a brain, kept in its checkout. A Pi runs only a device.
 
 `env.mjs` settles which part a daemon plays before anything else runs:
 
-1. `HEYMORGAN_ROLE` (`local`, `server` or `client`), if set — meant for trials;
+1. `HEYMORGAN_ROLE` (`local`, `server` or `client`), if set;
 2. otherwise `server` if `PORT` is set, which it is when the checkout has a
-   `.env` (read by `env.mjs` itself, without overriding the real environment);
-3. otherwise `client` if `client.json` names a `server`;
-4. otherwise `local`.
+   `.env` (read by `env.mjs` itself, without overriding the real environment):
+   a brain **housed** in its checkout, with its data in `data/`;
+3. otherwise `client` (a device) if `client.json` names a `server`;
+4. otherwise `local`: the whole of Morgan in one process, as before there were
+   devices. Kept for trials (`tests/trial.sh`). A `local` daemon started by its
+   service sets itself up as brain and device (as `heymorgan serve`) and starts
+   again as the device.
 
 `client.json` is `$HEYMORGAN_CLIENT_FILE`, by default
 `~/.config/heymorgan/client.json`:
 
 ```json
-{ "server": "home-server:8790", "key": "hc_…", "device": "laptop" }
+{ "server": "localhost:8790", "key": "hc_…", "device": "laptop" }
 ```
 
 `server` is `host:port` (taken as `ws://`), `ws://…`/`wss://…`, or
 `http://…`/`https://…` (turned into `ws://`/`wss://`, path kept, for a reverse
 proxy). `device` defaults to the hostname. `kind` may be given too (default
-`laptop`). It is written by `heymorgan connect`, `admin` `client.set`, and
-removed by `heymorgan disconnect`.
+`laptop`). `settings` holds the device's own settings, over the brain's
+(`heymorgan device`). It is written by `heymorgan serve`, `heymorgan
+connect` and `admin` `client.set`.
 
 **What a face sees does not change with the role.** It talks to the same local
 socket, with the same commands and events. The difference is who answers:
 
-**local** — the whole of Morgan on this machine. Everything above.
+**local** — the whole of Morgan in one process. Everything above.
 
-**client** — this machine's daemon has the microphone, the speaker, the wake
-word and the voices it knows; the server has everything else. On the local
-socket:
+**client** (a device) — this machine's daemon has the microphone, the wake
+word and the speaker; its brain has everything else, and does its speech
+unless the device does its own (below). On the local socket:
 
-- Answered here: `toggle`, `speak`, `watch`, `voices`, `enroll`,
-  `forget-voice`, and `admin` ops whose name starts `voice.`, `voices.` or
-  `client.`.
+- Answered here: `toggle`, `speak`, `watch`, `voices`, `enroll` (but
+  `enroll … --device`), `forget-voice`, `mute`, and `admin` ops whose name
+  starts `voices.` or `client.`, and `voice.preview`; `voice.list` too when
+  this device makes its own speech.
 - Everything else is forwarded to the server, and the server's reply is passed
   back as it is, with three changes: `status` gains `role: "client"` and
   `server`, and this machine's own `stt`, `tts`, `wakeWord`, `wakeEngine`,
@@ -479,25 +542,55 @@ does **not** stop speech already playing on the client; `stop` does both. A
 face on a client that wants speech to stop at once should send `stop`.
 
 **Note:** voice settings (`engine`, `kokoroVoice`, `voice`) are set with
-`config.set`, which a client forwards: the choice is saved on the server and
-mirrored back to every client. `voice.list` and `voice.preview`, though, are
-answered by the client, from its own installed voices.
+`config.set`, which a client forwards: the choice is saved on the brain and
+mirrored back to every device, and the brain speaks in it.
+
+**Where a device's speech is done** (1.11) is its `speech` setting: `brain`,
+`here`, or `auto` (the default): the brain's, for whatever the brain offers
+in its welcome (`stt`, `tts`, `voiceprints`), and this device's own for
+whatever it does not (a brain with no speech installed). Done by the brain,
+the device needs no Whisper, Piper, Kokoro or voice model at all; a device
+that has them uses them, too, while its brain cannot be reached. A device with
+no voice of its own says "I can't reach home right now" in the brain's voice,
+kept for that (`cant-reach.json` beside `client.json`), or two falling tones
+if it has never heard it.
+
+**A device's lights and button** (1.11): the `lights` setting is a command
+the device starts and keeps running. It is told the state, one word a line
+(`idle`, `listening`, `transcribing`, `thinking`, `consulting`, `speaking`,
+`muted`, `offline`), and says `press` or `hold` on its stdout: a press starts
+listening or stops an answer, a hold mutes or unmutes the microphone.
+`pi/lights.py` is one for the Voice Bonnet.
 
 **Note:** `access` is forwarded too, so any client — anything holding a key —
 can issue and revoke keys, including its own.
 
-**server** — the brain only: no microphone, speaker, screen or desktop. It keeps
-everything in the checkout's `data/` (`$HEYMORGAN_DATA`): `config.json`,
-`memory/`, the memory key in `memory.key` (there is no keyring),
-`access.json`, and its own command socket `heymorgan.sock`. It answers its local
-socket like a local daemon (for `heymorgan` run on the server), and its clients
-over the server link (§6). `toggle` does nothing there, `enroll` fails (there is no voice model), and
-`speak` is no use there (it would try to speak on the server itself). Its answers go out as `sentence` events for clients to speak.
+**server** (a brain) — no microphone, speaker, screen or desktop of its own.
+**Housed** in its checkout (the home server), it keeps everything in `data/`
+(`$HEYMORGAN_DATA`): `config.json`, `memory/`, the memory key in `memory.key`
+(there is no keyring), `access.json`, and its command socket `heymorgan.sock`.
+In someone's session (a laptop's own brain), it keeps that account's usual
+folders and login keyring, with `access.json` in `~/.config/heymorgan/` and
+its command socket at `$XDG_RUNTIME_DIR/heymorgan-brain.sock` (`heymorgan brain
+<command>`). It answers its local socket as a local daemon would, and its
+devices over the server link (§6). `toggle` and `speak` do nothing useful
+there; `enroll --device` starts teaching on a device. Its answers go out as
+`sentence` events; the device that asked asks the brain for each as sound.
+
+It does its devices' speech with this machine's whisper.cpp, Kokoro or Piper,
+and voice model (`stt`, `tts`, `engine`, the brain's own settings); or, with
+`speechUrl` (and `speechKey`) set, asks a speech service — `node speech.mjs
+serve` on another machine, such as the AI server beside Ollama — which does
+the same over HTTP (`POST /transcribe`, `/speak`, `/embed`, `GET /status`,
+each with `Authorization: Bearer <SPEECH_KEY>`). The voices it knows stay on
+the brain either way: the service only turns speech into a voiceprint.
 
 ## 6. The server link
 
-A server listens for WebSockets on `PORT` (from `.env`, conventionally 8790) at
-`HOST` (default `0.0.0.0`), any path, messages up to 32 MB. Every message is a
+A brain listens for WebSockets on `PORT` (8790 by convention) at `HOST`:
+by default `0.0.0.0` for a brain housed in its checkout, and `127.0.0.1` for a
+brain in a laptop's session unless its `listen` setting is `network`. Any
+path, messages up to 32 MB. Every message is a
 JSON text frame; binary frames are ignored. Behind a reverse proxy the path
 prefix is the proxy's to strip (see `docs/server-and-satellites.md`).
 
@@ -526,16 +619,20 @@ prefix is the proxy's to strip (see `docs/server-and-satellites.md`).
 The server answers:
 
 ```json
-{ "welcome": { "name": "Morgan", "state": "idle", "config": { … } } }
+{ "welcome": { "name": "Morgan", "state": "idle", "config": { … },
+  "speech": { "stt": true, "tts": true, "voiceprints": true, "engine": "kokoro", "voice": "af_heart", "rate": 24000, "enrolled": ["Jeff"] } } }
 ```
 
-`config` is the server's saved settings without `mcpServers` and `oracle`.
+`config` is the brain's saved settings without the ones that are commands or
+secrets (`LOCAL_ONLY` in `admin.mjs`). `speech` (1.11) is what the brain can do
+for this device's speech, and the voices it knows for this device; it is sent
+again as `{ "speechOffer": { … } }` whenever that changes (Kokoro still
+loading when the device connected, a speech service coming back). A brain
+from before 1.11 sends no `speech`, and a device then does its own.
 
-**Note:** `docs/server-and-satellites.md` plans `welcome { name, wakeWord,
-state }`, audio streamed in 20 ms frames, voice-activity detection, speech to
-text and text to speech on the server. None of that is built. Today a client
-does its own wake word, speech to text, voice checks and speech, and sends the
-server text. A satellite with no speech of its own cannot be one yet.
+`can` gains `voice` (1.11) for a device that listens for the wake word and is
+not muted: those are the devices weighed against each other when more than
+one hears it.
 
 **After the welcome**, from client to server:
 
@@ -544,6 +641,7 @@ server text. A satellite with no speech of its own cannot be one yet.
 | `{ "id": 7, "command": "type What time is it" }` | A command, exactly as a line on the local socket (§2), without the `\n`. `watch` is ignored. |
 | `{ "abilityResult": { "id": 3, "result": … } }` or `{ "abilityResult": { "id": 3, "error": "…" } }` | The answer to an ability request. |
 | `{ "can": [ … ] }` | What the device can do has changed. |
+| `{ "speech": { "id": 4, "op": "…", "args": { … } } }` | Speech asked of the brain (1.11); answered by `speechResult`. |
 
 From server to client:
 
@@ -553,6 +651,22 @@ From server to client:
 | `{ "type": "…", … }` | Every event, exactly as on `watch` (§3), to every connected client, from the moment of the welcome. |
 | `{ "config": { … } }` | The saved settings changed (same filtering as in `welcome`). |
 | `{ "ability": { "id": 3, "name": "…", "args": { … } } }` | Something only the device can do. Answer with `abilityResult` within 60 seconds, or the turn goes on without it. |
+| `{ "speechResult": { "id": 4, "result": { … } } }` or `{ "speechResult": { "id": 4, "error": "…" } }` | The answer to a `speech` request. |
+| `{ "speechOffer": { … } }` | What the brain offers for speech changed (as `welcome.speech`). |
+
+Speech, asked of the brain (1.11). Sound is 16 kHz 16-bit mono PCM, base64, in;
+16-bit mono at `rate`, base64, out.
+
+| `op` | `args` | `result` |
+|---|---|---|
+| `transcribe` | `pcm`, `prompt` (words to expect: the wake phrase, Morgan's name, `sttPrompt`) | `{ text }` |
+| `speak` | `text`, and optionally `engine` and `voice` (a preview) | `{ pcm, rate }` |
+| `whose` | `pcm`, `threshold` (the device's own bar) | `{ name, score }`: the voice, of those this device answers to, most like it. Deciding whether it passes is the device's. |
+| `teach` | `name`, `samples: [pcm…]`, `scope` (`auto` \| `device` \| `everywhere`) | `{ saved: "shared" \| "device", enrolled }`. `auto`: shared if no device has taught that voice, else this device's own. |
+| `seed` | `name`, `vectors` | `{ enrolled }`: a voice taught on this device before its brain did its speech, kept for every device unless the brain has one of that name. A device sends its own on connecting. |
+| `forget` | `name`, `scope` | `{ enrolled }` |
+| `voices` | — | `{ installed, enrolled, prints: [{ name, t, own }] }` |
+| `wake` | `score`: how far the wake word stood above the room's noise, as the device heard it | `{ go }`. With more than one device that can hear it, the brain waits 300 ms for others that heard it, and only the one with the highest score is told `go: true`; one heard within 2 seconds after a device was chosen is told `go: false` at once. A device that cannot reach the brain, or gets no answer in 1.5 seconds, goes ahead. |
 
 Abilities:
 
@@ -564,6 +678,7 @@ Abilities:
 | `find` | `hint` | files matching the words |
 | `read` | `path`, `question` | the file's contents, or the part that answers the question |
 | `mcp` | `server`, `tool`, `arguments` | the text the device's MCP server gave back |
+| `enroll` | `name`, `scope` | `"started"`: the device teaches that voice, saying each line for its person to repeat (1.11) |
 
 `capture` goes only to the device the turn came from (the one that last sent
 `say`, `type`, `ask` or `continue`); if that one cannot look at that source, the

@@ -134,11 +134,47 @@ heymorgan status
 `status` should say `"role":"client"` with the server's address. The plugin, the
 window and voice work as before; the answers now come from the server.
 
-To go back to running everything on the laptop:
+To keep the brain on the laptop again (its own memories, from before):
 
 ```bash
-heymorgan disconnect
+heymorgan serve
 ```
+
+## 8. Speech, on the brain
+
+Every device sends the brain what it heard and gets back words, and sends it
+sentences and gets back sound; a device then needs no speech models (a Pi in a
+speaker, [pi.md](pi.md)). The brain does that with whatever is installed for
+its account, under `~/.local/share/heymorgan/`, as on the laptop: whisper.cpp
+and a model, Piper or Kokoro, and the TitaNet voice model. Until they are
+there, each device does its own speech where it can (`"speech": "auto"`, the
+default), so nothing breaks while you install them.
+
+Or let the AI server do it, beside Ollama, where there is a GPU and memory to
+spare. On the AI server, a checkout of this repository, `npm ci`, the same
+models under that account's `~/.local/share/heymorgan/` (whisper.cpp built with
+CUDA, and `small.en` or `medium.en` is affordable there), and in the checkout's
+`.env`:
+
+```bash
+SPEECH_KEY=a-long-random-string
+```
+
+Then `systemd/heymorgan-speech.service`, filled in, as a system service there.
+On the home server, in `data/config.json` (these are kept off the network, so
+they are set on the server itself):
+
+```json
+{ "speechUrl": "http://ai-server:8791", "speechKey": "a-long-random-string" }
+```
+
+and `./restart.sh`. `heymorgan status` on a device then says `"speech":"brain"`.
+
+The voices Morgan knows stay on the brain: the first device a voice is taught
+on makes the one every device uses, and `heymorgan enroll <name> --here
+--device <device>` teaches it again for one device that hears it differently.
+Voices taught on the laptop before the brain did speech are handed to it the
+first time the laptop connects.
 
 ## Updating the server
 

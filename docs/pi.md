@@ -1,20 +1,24 @@
 # Morgan on a Raspberry Pi, in a speaker
 
 A Pi in an Echo Dot (3rd generation) enclosure: voice only, no screen, no
-camera, a client of the same home server the laptop uses. The plan behind it is
+camera, a device of the same brain the laptop uses (the home server, or the
+laptop itself if that is where the brain is). The plan behind it is
 in [server-and-satellites.md](server-and-satellites.md); this is how to set one
 up today, and what is not there yet.
 
 ## What runs where
 
-The Pi is a **client**: it listens for the wake word, hears what is said,
-turns it into text, sends it to the server, and speaks the answer. Everything
-else (memory, the model, the Oracle, Hermes, reminders) is on the home server,
-exactly as for the laptop.
+The Pi is a **device**: it listens for the wake word, sends what is said to
+the brain, and plays the answer the brain sends back as sound. The brain
+turns the speech into words and the answer into speech, and knows whose voice
+it is ([deploy.md](deploy.md), §8); everything else (memory, the model, the
+Oracle, Hermes, reminders) is there too, exactly as for the laptop. So the Pi
+needs no Whisper, Piper, Kokoro or voice model: only the wake-word spotter.
 
-Today the Pi turns speech into text and text into speech **itself** (whisper.cpp
-and Piper). Moving both to the AI server (phase 1 of the plan) would make it
-much lighter; until then, choose the small models below.
+The brain has to be doing speech for this (`heymorgan status` on the Pi says
+`"speech":"brain"`). A brain that is not yet does none for the Pi, which then
+has nothing to hear or speak with; until then, install the small models below
+on the Pi (*If the Pi does its own speech*).
 
 ## The hardware
 
@@ -22,8 +26,9 @@ much lighter; until then, choose the small models below.
   shell; a Pi 3 A+ as the fallback. A Pi 5 does not fit.
 - The Adafruit Voice Bonnet: two microphones, a speaker amplifier, a button and
   three LEDs, on ALSA. The Dot's speaker, or Adafruit's 40 mm one.
-- Optionally, a small NeoPixel ring behind the Dot's light diffuser. **Not used
-  by Morgan yet**: the ring, the bonnet's LEDs and its button are phase 4.
+- Optionally, a small NeoPixel ring behind the Dot's light diffuser, on the
+  Pi's SPI pins. The ring, the bonnet's three LEDs and its button are run by
+  `pi/lights.py` (*Lights and the button*, below).
 
 ## The software
 
@@ -44,22 +49,16 @@ On Raspberry Pi OS Lite (64-bit, Bookworm or later):
    ```bash
    cd ~/heymorgan && npm ci
    ```
-5. **Speech and wake word**, under `~/.local/share/heymorgan/`, as on the laptop
-   (the README's "What it needs"), but small:
-   - whisper.cpp built from source, with `models/ggml-tiny.en.bin` rather than
-     `base.en`;
-   - Piper and one `low` or `medium` voice (`heymorgan voice <name>` fetches
-     one); **no Kokoro**, whose model alone is too big for 512 MB;
-   - the sherpa-onnx keyword-spotting model (the wake word);
-   - the TitaNet speaker model, to answer only your voice.
-6. **Swap**: 1 GB (`/etc/dphys-swapfile`), for headroom while Whisper works.
+5. **The wake word**: the sherpa-onnx keyword-spotting model, under
+   `~/.local/share/heymorgan/`, as the README's "What it needs" says.
 
-## Making it a client
+## Making it a device
 
-On the **server**, a key for it:
+A key for it, from the brain: on the laptop (or anywhere Morgan runs),
+Settings → Morgan → Where → Devices → Add, or
 
 ```bash
-./bin/heymorgan access add kitchen-dot
+heymorgan devices add kitchen-dot
 ```
 
 On the **Pi**, with the line that prints:
@@ -68,17 +67,9 @@ On the **Pi**, with the line that prints:
 ~/heymorgan/bin/heymorgan connect home-server:8790 hc_… kitchen-dot
 ```
 
-Then the Pi's own settings, which override the server's for this device only
-and are never set from the network:
-
-```bash
-cd ~/heymorgan
-bin/heymorgan device engine piper
-bin/heymorgan device voice en_US-amy-low
-bin/heymorgan device stt "'$HOME/.local/share/heymorgan/whisper.cpp/build/bin/whisper-cli' -m '$HOME/.local/share/heymorgan/models/ggml-tiny.en.bin' -f {file} -nt -np -t 4 --prompt {prompt}"
-```
-
-With plain ALSA instead of PipeWire, also:
+Then the Pi's own settings, if it needs any, which override the brain's for
+this device only and are never set from the network. With plain ALSA instead of
+PipeWire:
 
 ```bash
 bin/heymorgan device echoCancel false
@@ -87,7 +78,7 @@ bin/heymorgan device play "aplay -q -f S16_LE -r {rate} -c 1 -t raw"
 ```
 
 `bin/heymorgan device` lists them; `bin/heymorgan device <setting> --clear`
-goes back to the server's.
+goes back to the brain's.
 
 ## The service
 
@@ -116,23 +107,61 @@ and readable only by this account.
 Check it: `bin/heymorgan status` should say `"role":"client"`, and
 `journalctl --user -u heymorgan -n 20` should end with `home: connected`.
 
-## Teaching it your voice
+## Lights and the button
 
-The Pi's microphones are not the laptop's, so it learns your voice for itself.
-Until it has, it answers anyone. Teach it, then say the phrases it asks for:
+`pi/lights.py` shows Morgan's state on the bonnet's LEDs and a ring (a
+breathing blue while listening, a sweep while thinking, white while speaking,
+red when muted, blinking amber when the brain cannot be reached), and turns
+the button into a press (talk, or stop an answer) and a hold (mute or unmute
+the microphone):
 
 ```bash
-bin/heymorgan enroll Jeff
+pip install --break-system-packages adafruit-blinka adafruit-circuitpython-dotstar adafruit-circuitpython-neopixel-spi
 ```
+
+```bash
+bin/heymorgan device lights "python3 $HOME/heymorgan/pi/lights.py --ring 12"
+```
+
+Leave out `--ring 12` without a ring. Its pins are the bonnet's as Adafruit's
+guide gives them (the LEDs on D6 and D5, the button on D17); if the guide says
+otherwise for your board, `--clock`, `--data` and `--button` change them.
+`python3 pi/lights.py --dry` shows the states on the terminal with no hardware.
+`bin/heymorgan mute` does what holding the button does.
+
+## Teaching it your voice
+
+It already knows the voices the brain knows: the first device a voice is taught
+on makes the one every device uses. If the Dot hears you poorly (the brain's
+Devices list says so), teach it again there, as the Dot's own. From the laptop,
+where the Dot then says each line for you to repeat back:
+
+```bash
+heymorgan enroll Jeff --here --device kitchen-dot
+```
+
+or say to the Dot, once it knows you, "Morgan, learn my voice on this one".
 
 ## Not there yet
 
-- **Two devices, one "Hey Morgan".** With the laptop and the Dot in one room,
-  both wake and both answer. Choosing one (the plan's phase 3) is not built.
-- **The ring, the LEDs and the button** (phase 4): the Dot shows nothing, and
-  the button does nothing.
-- **Speech on the AI server** (phase 1): until it is, the first words of an
-  answer come later than on the laptop, by however long Whisper and Piper take
-  on the Pi.
+- **Measured on a Zero 2 W**: whether the wake-word spotter keeps up, and
+  `pi/lights.py`'s pins on a real bonnet. Both were written without one to hand.
 - **Reminders** go off on every device that can speak, the Dot included; that
   is as decided.
+
+With the laptop and the Dot in one room, both hear "Hey Morgan", and the brain
+lets the one that heard it better answer; the other stands down.
+
+## If the Pi does its own speech
+
+For a brain not doing speech yet, or with `bin/heymorgan device speech here`:
+under `~/.local/share/heymorgan/`, whisper.cpp built from source with
+`models/ggml-tiny.en.bin`, Piper with one `low` or `medium` voice (**no
+Kokoro**, whose model alone is too big for 512 MB), the TitaNet speaker model,
+and 1 GB of swap (`/etc/dphys-swapfile`). Then:
+
+```bash
+bin/heymorgan device engine piper
+bin/heymorgan device voice en_US-amy-low
+bin/heymorgan device stt "'$HOME/.local/share/heymorgan/whisper.cpp/build/bin/whisper-cli' -m '$HOME/.local/share/heymorgan/models/ggml-tiny.en.bin' -f {file} -nt -np -t 4 --prompt {prompt}"
+```

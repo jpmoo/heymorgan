@@ -5,37 +5,62 @@ PipeWire). A local model served by Ollama does the talking. When a question is
 beyond it, it consults "the Oracle" — Claude, through the `claude` command on
 its own subscription login — and relays the answer.
 
+## Brain and devices
+
+Morgan is a **brain** — memory, the model, the Oracle, reminders, the voices it
+knows, and speech — and one or more **devices**: the microphone, the wake word,
+the speaker, and whatever screen, folders or tools a device offers. A device
+reaches its brain at an address, with a key. On a laptop with its own brain
+the brain is a second service and the address is `localhost:8790`; with the
+brain on a home server, it is that server's address. Nothing else differs:
+the same settings, the same faces, the same voice.
+
+- `heymorgan serve`: keep the brain on this machine (heymorgan-brain), with this
+  machine as its first device. A fresh install does this by itself the first
+  time its service starts.
+- `heymorgan connect <address> <key> [name]`: use a brain elsewhere.
+- `heymorgan devices` (`add`, `remove`): the devices a brain lets in, a key each.
+
+The brain does every device's speech, so a device needs no speech models of its
+own; or a speech service on another machine does it for the brain
+(`speech.mjs serve`, [deploy.md](docs/deploy.md)). When two devices hear "Hey
+Morgan", the one that heard it best answers. See [protocol.md](docs/protocol.md) §5.
+
 ## What is where
 
 | | |
 |---|---|
-| `daemon.mjs` | The assistant: microphone, wake word, speech in and out, the model loop, memory, sight, MCP tools. Runs as `heymorgan.service`. |
+| `daemon.mjs` | The assistant: as a device, the microphone, wake word and speaker, sight and folders (`heymorgan.service`); as a brain, the model loop, memory, MCP tools and speech for its devices (`heymorgan-brain.service` on a laptop, `heymorgan-server.service` on a home server). |
+| `speech.mjs` | Speech in and out, and voiceprints: whisper.cpp, Kokoro or Piper, TitaNet; or, as `node speech.mjs serve`, the same for brains on other machines. |
 | `bin/heymorgan` | The command: `settings`, `chat`, `toggle`, `say`, `type`, `stop`, `new`, `interview`, `voice`, `login`, `status`, `watch`. |
 | `settings.mjs` | `heymorgan settings`: menus for everything in `~/.config/heymorgan/config.json`. |
 | `lib.mjs` | Paths, defaults, the Oracle's login, encryption. |
 | `history.mjs` | Every exchange, sealed, with embeddings for finding earlier ones. |
 | `admin.mjs` | What the settings window may ask of the daemon: `heymorgan admin {"op": ..., "args": ...}`. |
 | `reminders.mjs` | Timers and reminders: working out when they are due. |
-| `speaker.mjs` | Whose voice is speaking, from taught voiceprints. |
+| `speaker.mjs` | Taught voiceprints: the set every device shares, and a device's own. |
 | `mcp.mjs` | A small MCP client (stdio and HTTP with a header key; no OAuth). |
 | `wake.mjs` | The wake-word spotter. |
 | `kokoro.mjs` | The Kokoro voice, kept loaded as a helper process. |
 | `keyring.py` | Fetches the data key from the login keyring. |
 | `noctalia/` | The Noctalia plugin: voice popup, chat window, settings window, bar icon. |
-| `systemd/` | The user unit. |
+| `systemd/` | The device's user unit, the laptop brain's (filled in by `heymorgan serve`), and templates for a home server's brain and a speech service. |
+| `pi/lights.py` | A speaker's lights and button (the Voice Bonnet), as a device's `lights` helper. |
 | `docs/protocol.md` | What a face or satellite may say to the daemon, and what it hears back: the versioned client protocol. |
 | `docs/deploy.md` | Putting Morgan's brain on a home server, with the laptop as its first client. |
 | `docs/pi.md` | A Raspberry Pi in a speaker as a voice-only client: setup, its own settings, what is not there yet. |
 
 ## What it needs, beyond this repository
 
-Under `~/.local/share/heymorgan/`, none of it committed here:
+Wherever speech is done (the brain, or a device doing its own), under
+`~/.local/share/heymorgan/`, none of it committed here:
 
 - `whisper.cpp/` built from source, and `models/ggml-base.en.bin` (speech to text)
 - `piper/` and `voices/*.onnx` (the lighter voice)
 - `kokoro-multi-lang-v1_0/` (the more natural voice)
-- `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/` (wake word)
 - `speaker/nemo_en_titanet_small.onnx` (telling voices apart)
+
+On every device: `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/` (wake word).
 
 Also: Node 22, `npm install` here, an Ollama server with a tool-calling chat
 model and an embedding model, the `claude` command, `pw-record`, `pw-play`,
@@ -57,7 +82,9 @@ heymorgan settings
 ```
 
 The unit file and the desktop file assume the repository is at
-`~/Documents/Scripts/heymorgan`.
+`~/Documents/Scripts/heymorgan`. The first time the service starts, it sets
+itself up as brain and device (as `heymorgan serve`); `heymorgan connect`
+points it at a brain elsewhere instead.
 
 Until 2026-10-23 all of this was called heyclaude. The old names still work for
 now, as `docs/rename.md` describes: `heyclaude` is a link to the command,
@@ -70,7 +97,8 @@ links behind.
 
 - Settings: `~/.config/heymorgan/config.json` (not encrypted; holds any MCP access keys).
 - The Oracle's Claude login: `~/.config/heymorgan/anthropic` and `~/.config/heymorgan/claude`, apart from any other Claude login on the machine.
-- Memory topics, saved pictures and the transcript: `~/.local/share/heymorgan/memory` and `history`, encrypted with a key in the login keyring.
+- Memory topics, saved pictures, voiceprints and the transcript: `~/.local/share/heymorgan/memory` and `history`, encrypted with a key in the login keyring — on the machine the brain is on.
+- The brain's device keys, as hashes: `~/.config/heymorgan/access.json` (a home server's: `data/access.json`). A device's own key and settings: `~/.config/heymorgan/client.json`.
 
 ## Security and privacy
 

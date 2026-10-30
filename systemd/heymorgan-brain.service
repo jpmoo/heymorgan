@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Jeff Moore
+# Morgan's brain, in this account's session, for this machine's own device and
+# any other that is given a key: a laptop with a brain of its own. Installed by
+# `heymorgan serve`, which fills in the checkout and node; not by hand.
+#
+# The home server's brain is heymorgan-server.service, kept in its checkout.
+
+[Unit]
+Description=Morgan's brain (heymorgan), serving this machine's devices
+After=network-online.target
+# It may start before the login keyring is unlocked, and then cannot read its
+# memory: keep trying rather than giving up after a few quick failures.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=@NODE@ @CHECKOUT@/daemon.mjs
+Environment=HEYMORGAN_ROLE=server
+Environment=PORT=@PORT@
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
