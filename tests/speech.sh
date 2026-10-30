@@ -53,4 +53,4 @@ check() {
   [ "$after" -gt "$before" ] && echo "ok: it said it could not reach home ($(( (after - before) / 2 )) samples)" || echo "FAIL: nothing was said"
 }
 export -f check; export work root
-CLIENT_ENV="HEYMORGAN_DEBUG=1" SIGHT='[]' SERVER_SPEECH=piper CLIENT_SETTINGS="$settings" "$here/remote.sh" bash -c check
+CLIENT_ENV="HEYMORGAN_DEBUG=1" SIGHT='[]' SERVER_SPEECH="${SERVER_SPEECH:-piper}" CLIENT_SETTINGS="$settings" "$here/remote.sh" bash -c check

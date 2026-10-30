@@ -102,6 +102,16 @@ export function createSpeech(cfg, { socket = join(RUNTIME, "heymorgan-tts.sock")
       return speech;
     },
     stop() { helper?.kill("SIGTERM"); },
+    // The voice to keep loaded: a speech service speaks in whichever voice its brain is set to, and follows it when it changes.
+    use({ engine, kokoroVoice, kokoroSpeed, voice } = {}) {
+      const before = JSON.stringify([cfg.engine, cfg.kokoroVoice, cfg.kokoroSpeed]);
+      Object.assign(cfg, Object.fromEntries(Object.entries({ engine, kokoroVoice, kokoroSpeed, voice }).filter(([, value]) => value !== undefined && value !== null)));
+      if (JSON.stringify([cfg.engine, cfg.kokoroVoice, cfg.kokoroSpeed]) === before) return;
+      helper?.kill("SIGTERM");
+      helper = null;
+      kokoroUp = false;
+      speech.start();
+    },
     get ready() {
       const kokoro = kokoroUp;
       return {
@@ -132,6 +142,8 @@ export function createSpeech(cfg, { socket = join(RUNTIME, "heymorgan-tts.sock")
 
     // One sentence. Another engine or voice than the one kept loaded (a preview) is made once, more slowly.
     async synthesize(text, { engine, voice } = {}) {
+      // Kokoro still loading (just started, or its voice just changed): waited for, rather than answered in another voice.
+      for (let waited = 0; engine === undefined && helper && !kokoroUp && waited < 20_000; waited += 100) await new Promise((done) => setTimeout(done, 100));
       engine ??= kokoroUp ? "kokoro" : "piper";
       if (engine === "kokoro") {
         if (kokoroUp && (!voice || voice === cfg.kokoroVoice)) {
@@ -171,7 +183,7 @@ export function createSpeech(cfg, { socket = join(RUNTIME, "heymorgan-tts.sock")
 }
 
 // Speech asked of a speech service (`node speech.mjs serve` elsewhere).
-export function remoteSpeech(url, key = "") {
+export function remoteSpeech(url, key = "", cfg = {}) {
   const base = String(url).replace(/\/+$/, "");
   const headers = key ? { Authorization: `Bearer ${key}` } : {};
   let known = { stt: false, tts: false, voiceprints: false, engine: null, voice: null, rate: 24000 };
@@ -190,8 +202,11 @@ export function remoteSpeech(url, key = "") {
     stop() { clearInterval(timer); },
     get ready() { return known; },
     transcribe: async (pcm, prompt = "") => (await (await ask("/transcribe", pcm, { "Content-Type": "application/octet-stream", "X-Prompt": encodeURIComponent(prompt) })).json()).text,
+    // A preview names its engine and voice; otherwise the service is told the brain's, and keeps it loaded.
     async synthesize(text, { engine, voice } = {}) {
-      const response = await ask("/speak", JSON.stringify({ text, engine, voice }), { "Content-Type": "application/json" });
+      const keep = engine === undefined && voice === undefined
+        ? { engine: cfg.engine, kokoroVoice: cfg.kokoroVoice, kokoroSpeed: cfg.kokoroSpeed, voice: cfg.voice } : null;
+      const response = await ask("/speak", JSON.stringify({ text, engine, voice, keep }), { "Content-Type": "application/json" });
       return { pcm: Buffer.from(await response.arrayBuffer()), rate: Number(response.headers.get("X-Rate")) || 24000 };
     },
     embed: async (pcm) => (await (await ask("/embed", pcm, { "Content-Type": "application/octet-stream" })).json()).vector,
@@ -240,8 +255,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "s
         return send(200, { text: await speech.transcribe(await body(request), prompt) });
       }
       if (request.url === "/speak") {
-        const { text, engine, voice } = JSON.parse(String(await body(request)));
-        const { pcm, rate } = await speech.synthesize(String(text ?? ""), { engine, voice });
+        const { text, engine, voice, keep } = JSON.parse(String(await body(request)));
+        // The brain's voice, kept loaded from now on (a change of voice in its settings takes a few seconds once).
+        if (keep) speech.use(keep);
+        const { pcm, rate } = await speech.synthesize(String(text ?? ""), keep ? {} : { engine, voice });
         return send(200, pcm, { "X-Rate": String(rate) });
       }
       if (request.url === "/embed") return send(200, { vector: await speech.embed(await body(request)) });

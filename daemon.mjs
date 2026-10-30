@@ -315,7 +315,7 @@ const turnNotes = () => [
 const KOKORO_SOCKET = process.env.HEYMORGAN_SOCKET ? `${process.env.HEYMORGAN_SOCKET}.tts` : join(RUNTIME, "heymorgan-tts.sock");
 const ownSpeech = createSpeech(cfg, { socket: KOKORO_SOCKET });
 // What the brain hears and speaks for its devices with.
-const brainSpeech = !BRAIN ? null : ROLE === "server" && cfg.speechUrl ? remoteSpeech(cfg.speechUrl, cfg.speechKey) : ownSpeech;
+const brainSpeech = !BRAIN ? null : ROLE === "server" && cfg.speechUrl ? remoteSpeech(cfg.speechUrl, cfg.speechKey, cfg) : ownSpeech;
 brainSpeech?.start();
 if (ROLE === "client" && cfg.speech === "here") ownSpeech.start();
 

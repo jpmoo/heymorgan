@@ -36,6 +36,9 @@ config.update({"wakeWord": None, "interruptWord": None, "tts": None, "engine": "
 if os.environ.get("SERVER_SPEECH"):
     piper = os.path.expanduser("~/.local/share/heymorgan/piper/piper")
     config.update({"tts": f"'{piper}' --model {{voice}} --output-raw", "engine": os.environ["SERVER_SPEECH"]})
+# More of the brain's settings, when a test gives them (BRAIN_CONFIG, JSON: a speech service's address, say).
+if os.environ.get("BRAIN_CONFIG"):
+    config.update(json.loads(os.environ["BRAIN_CONFIG"]))
 # Folders and sight for the client to offer the server, when a test gives them.
 if os.environ.get("FOLDERS"):
     config["folders"] = json.loads(os.environ["FOLDERS"])
