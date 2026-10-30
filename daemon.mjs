@@ -9,7 +9,7 @@
 // back for Morgan to relay. A Unix socket takes commands (toggle, say, stop,
 // new, status, watch) and streams events.
 
-import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, MIRROR, SHARE } from "./env.mjs"; // first: which part this copy plays, and where things are kept
+import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, HEADLESS, MIRROR, SHARE } from "./env.mjs"; // first: which part this copy plays, and where things are kept
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
@@ -61,7 +61,10 @@ const PIPER = join(SPEECH, "piper", "piper");
 // At login this can start before the desktop does. Screenshots, the clipboard
 // and the hotkey all need to know which desktop session to talk to, so wait
 // for one to appear and take its details from the sockets it leaves behind.
-for (let waited = 0; ROLE !== "server" && waited < 90; waited += 2) {
+// Only where there is a desktop to wait for: a headless device (a Pi in a
+// speaker) has none, and waited a minute and a half at every start.
+const WITH_DESKTOP = ROLE !== "server" && !HEADLESS && spawnSync("sh", ["-c", "command -v Hyprland"], { stdio: "ignore" }).status === 0;
+for (let waited = 0; WITH_DESKTOP && waited < 90; waited += 2) {
   process.env.WAYLAND_DISPLAY ||= readdirSync(RUNTIME).find((name) => /^wayland-\d+$/.test(name)) ?? "";
   const hypr = join(RUNTIME, "hypr");
   if (!process.env.HYPRLAND_INSTANCE_SIGNATURE && existsSync(hypr)) {
@@ -193,9 +196,16 @@ const defaults = {
 
 const configPath = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
 const user = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+// A device's own settings, over the server's: its voice engine and voice, its
+// recording, playback and speech commands, echo cancelling, its camera. A Pi
+// in a speaker is not the laptop. They are kept in client.json under
+// "settings" (`heymorgan device`), on the device, so they are never set from
+// the network.
+const DEVICE = ROLE === "client" && CLIENT.settings && typeof CLIENT.settings === "object" ? CLIENT.settings : {};
 const cfg = {
   ...defaults,
   ...user,
+  ...DEVICE,
   ollama: { ...defaults.ollama, ...user.ollama },
   oracle: { ...defaults.oracle, ...user.oracle },
 };
@@ -235,7 +245,7 @@ const LIVE = ["visionModel", "similarFloor", "knownVoicesOnly", "voiceThreshold"
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
-    for (const key of LIVE) cfg[key] = key in saved ? saved[key] : defaults[key];
+    for (const key of LIVE) cfg[key] = key in DEVICE ? DEVICE[key] : key in saved ? saved[key] : defaults[key];
     if (cfg.timeZone) applyTimeZone(cfg.timeZone);
     else delete process.env.TZ;
     if (ROLE === "server") tellClients({ config: forClients(saved) });
@@ -4576,7 +4586,7 @@ function mirror(config) {
   if (before === text) return;
   writeFileSync(MIRROR, text, { mode: 0o600 });
   const fixed = [...new Set([...Object.keys(config), ...Object.keys(user)])]
-    .filter((key) => !LIVE.includes(key) && !["mcpServers", "oracle"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
+    .filter((key) => !LIVE.includes(key) && !(key in DEVICE) && !["mcpServers", "oracle"].includes(key) && JSON.stringify(config[key]) !== JSON.stringify(user[key]));
   if (configPath !== MIRROR || fixed.length) {
     console.error(`home: settings changed on the server (${fixed.join(", ") || "first mirror"}); starting again to take them up`);
     setTimeout(() => process.exit(0), 300);

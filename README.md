@@ -24,6 +24,8 @@ its own subscription login — and relays the answer.
 | `noctalia/` | The Noctalia plugin: voice popup, chat window, settings window, bar icon. |
 | `systemd/` | The user unit. |
 | `docs/protocol.md` | What a face or satellite may say to the daemon, and what it hears back: the versioned client protocol. |
+| `docs/deploy.md` | Putting Morgan's brain on a home server, with the laptop as its first client. |
+| `docs/pi.md` | A Raspberry Pi in a speaker as a voice-only client: setup, its own settings, what is not there yet. |
 
 ## What it needs, beyond this repository
 

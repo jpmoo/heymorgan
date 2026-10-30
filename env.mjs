@@ -77,6 +77,13 @@ export const ROLE = process.env.HEYMORGAN_ROLE ?? (process.env.PORT ? "server" :
 export const MIRROR = process.env.HEYMORGAN_MIRROR ?? join(CONFIG_HOME, "mirror.json");
 if (ROLE === "client" && existsSync(MIRROR)) process.env.HEYMORGAN_CONFIG ??= MIRROR;
 
+// A device with no desktop (a Pi in a speaker): HEYMORGAN_HEADLESS=1 in its
+// unit. It waits for no desktop to appear, and having no login keyring, it
+// keeps its key (which seals only the voices taught to it) in a file only its
+// account can read.
+export const HEADLESS = process.env.HEYMORGAN_HEADLESS === "1";
+if (HEADLESS && ROLE !== "server") process.env.HEYMORGAN_KEY_FILE ??= join(CONFIG_HOME, "device.key");
+
 if (ROLE === "server") {
   const data = process.env.HEYMORGAN_DATA ?? join(ROOT, "data");
   process.env.HEYMORGAN_DATA = data;

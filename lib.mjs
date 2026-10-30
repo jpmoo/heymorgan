@@ -120,11 +120,22 @@ export function previewVoice(name, text) {
 // keyring. Each sealed piece is base64 of nonce, tag and AES-256-GCM ciphertext.
 let key = null;
 
+// Whether anything is sealed already, so that a new key would lock it away.
+function sealedAlready() {
+  return [MEMORY, join(SPEECH, "history")].some((dir) => existsSync(dir)
+    && readdirSync(dir, { recursive: true }).some((name) => /\.(sealed|topic|picture|document|voice)$/.test(String(name))));
+}
+
 export function dataKey() {
   if (key) return key;
   // On the server, a file only its account can read, put there by `heymorgan key import`.
   const file = process.env.HEYMORGAN_KEY_FILE;
   if (file) {
+    // A headless device's first start: nothing sealed yet, so a key of its own is made.
+    if (!existsSync(file) && ROLE !== "server" && !sealedAlready()) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, randomBytes(32).toString("base64") + "\n", { mode: 0o600 });
+    }
     if (!existsSync(file)) throw new Error(`there is no memory key at ${file}: put one there with \`heymorgan key import\``);
     key = Buffer.from(readFileSync(file, "utf8").trim(), "base64");
     if (key.length !== 32) throw new Error(`the memory key in ${file} is not the right size`);
@@ -134,8 +145,7 @@ export function dataKey() {
   // A new key is made only for a memory that has nothing sealed in it yet. With
   // sealed memory already there, a missing key means the keyring lost it, and a
   // new one would lock that memory away for good (as happened at a boot).
-  const sealed = [MEMORY, join(SPEECH, "history")].some((dir) => existsSync(dir)
-    && readdirSync(dir, { recursive: true }).some((name) => /\.(sealed|topic|picture|document|voice)$/.test(String(name))));
+  const sealed = sealedAlready();
   const result = spawnSync("python3", [script, ...(sealed ? ["--no-create"] : [])], { encoding: "utf8" });
   // A keyring that is locked or not yet up says so; one that answers with nothing has lost the key.
   if (result.status !== 0 && sealed && !result.stderr.trim()) {

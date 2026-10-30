@@ -50,6 +50,7 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heymorgan log [-f]              what the assistant has logged lately | follow it as it happens",
     "heymorgan connect <server> <key> [device]   make this machine a client of a server (host:port, or https://host/heymorgan)",
     "heymorgan disconnect            run the whole assistant on this machine again",
+    "heymorgan device [<setting> <value> | <setting> --clear]   this device's own settings, over the server's (a Pi's voice, its sound commands)",
     "heymorgan access add|list|remove [device]   on a server: the keys that let client apps in",
     "heymorgan admin <json>          what the settings window uses: { op, args }",
   ].join("\n"));
@@ -168,17 +169,56 @@ if (args[0] === "log" && (args[1] === "-f" || args[1] === "--follow")) {
   process.exit(0);
 }
 
+function readClient(file) {
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return {}; }
+}
+function writeClient(file, value) {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+}
+
+if (args[0] === "device") {
+  // This device's own settings, over the server's (client.json "settings"):
+  // `heymorgan device` lists them, `heymorgan device engine piper` sets one,
+  // `heymorgan device engine --clear` goes back to the server's. Set here, on
+  // the device, never from the network.
+  const { CLIENT_FILE } = await import("../env.mjs");
+  const client = readClient(CLIENT_FILE);
+  const settings = { ...(client.settings ?? {}) };
+  const [, name, ...rest] = args;
+  if (!name) {
+    const entries = Object.entries(settings);
+    if (!entries.length) console.log("This device has no settings of its own: it uses the server's.");
+    for (const [key, value] of entries) console.log(`${key.padEnd(16)} ${JSON.stringify(value)}`);
+    process.exit(0);
+  }
+  if (rest[0] === "--clear") delete settings[name];
+  else if (!rest.length) { console.error("usage: heymorgan device [<setting> <value> | <setting> --clear]"); process.exit(2); }
+  else {
+    const text = rest.join(" ");
+    let value;
+    try { value = JSON.parse(text); } catch { value = text; } // true, 3, null and ["a"] as themselves; anything else as words
+    settings[name] = value;
+  }
+  writeClient(CLIENT_FILE, { ...client, settings });
+  console.error(rest[0] === "--clear" ? `${name}: the server's again.` : `${name} set on this device.`);
+  restartDaemon();
+  process.exit(0);
+}
+
 if (args[0] === "connect" || args[0] === "disconnect") {
   // Which server this machine is a client of, kept in client.json; none, and it runs Morgan itself.
   const { CLIENT_FILE } = await import("../env.mjs");
   if (args[0] === "connect") {
     const [, server, key, device] = args;
     if (!server || !key?.startsWith("hc_")) { console.error("usage: heymorgan connect <host:port | https://host/heymorgan> <key from `heymorgan access add` on the server> [device name]"); process.exit(2); }
-    mkdirSync(dirname(CLIENT_FILE), { recursive: true });
-    writeFileSync(CLIENT_FILE, JSON.stringify({ server, key, ...(device ? { device } : {}) }, null, 2) + "\n", { mode: 0o600 });
+    // Kept as they are: the device's own settings, its kind, its own tool servers.
+    const kept = readClient(CLIENT_FILE);
+    writeClient(CLIENT_FILE, { ...kept, server, key, ...(device ? { device } : {}) });
     console.error(`This machine is now a client of ${server}.`);
   } else {
-    rmSync(CLIENT_FILE, { force: true });
+    const { server, key, ...kept } = readClient(CLIENT_FILE);
+    if (Object.keys(kept).length) writeClient(CLIENT_FILE, kept); else rmSync(CLIENT_FILE, { force: true });
     console.error("This machine runs the whole assistant itself again.");
   }
   restartDaemon();
