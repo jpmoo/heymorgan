@@ -2367,13 +2367,13 @@ const transcript = new Transcript({
 });
 
 let history = []; // user, assistant and tool messages, without the system prompt
-// Talaris's record of what the user does (its activity tools, through its MCP)
-// never reaches the Oracle: once Morgan has read it in a conversation, the
+// Talaris's record of what the user does (its activity tools, through its MCP),
+// and where the user is (its `where`), never reach the Oracle: once Morgan has read either in a conversation, the
 // Oracle is not consulted again until the next one — the Oracle is sent the
 // conversation so far, and Morgan's replies would carry what it read.
 let privateTurns = false;
-const PRIVATE_TOOLS = /__(work_patterns|work_log)$/;
-const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record from Talaris, which stays with you and never goes to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
+const PRIVATE_TOOLS = /__(work_patterns|work_log|where)$/;
+const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record or whereabouts from Talaris, which stay with you and never go to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
