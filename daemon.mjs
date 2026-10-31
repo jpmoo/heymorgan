@@ -2393,21 +2393,36 @@ let history = []; // user, assistant and tool messages, without the system promp
 
 const WEATHER = /\b(weather|forecast|rain\w*|snow\w*|sleet|hail|drizzl\w*|temperature|degrees|hot|cold|warm|chilly|freezing|humid\w*|sunny|cloudy|windy|wind|storm\w*|thunder\w*|umbrella|coat|jacket|sunrise|sunset)\b/i;
 
-async function whereNow() {
+/** The `where` of the device that was asked: its server's name, or null where none offers one. */
+function wherePick() {
   // The asking device's own `where` first: another device's may be in another town.
   const own = [...mcpAll].filter(([, held]) => held.tools?.some?.((tool) => tool.name === "where"));
   const asking = links.get(turnFrom)?.name;
   const pick = own.find(([, held]) => held.device === asking) ?? (ROLE === "server" ? null : own[0]);
-  if (!pick || !mcpTools.some((tool) => tool.function.name === `${pick[0]}__where`)) return null;
+  return pick && mcpTools.some((tool) => tool.function.name === `${pick[0]}__where`) ? pick[0] : null;
+}
+
+/** What the asking device's `where` says: its words as the device gives them, or null. */
+async function whereSaid() {
+  const server = wherePick();
+  if (!server) return null;
   try {
-    const said = String(await mcpClients.get(pick[0]).call("where", {}));
-    const found = said.match(/About (-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
-    return found ? { lat: Number(found[1]), lon: Number(found[2]) } : null;
+    return { tool: `${server}__where`, said: String(await mcpClients.get(server).call("where", {})) };
   } catch (error) {
-    console.error(`weather: could not ask where the user is: ${error.message}`);
+    console.error(`where: could not ask the device: ${error.message}`);
     return null;
   }
 }
+
+async function whereNow() {
+  const got = await whereSaid();
+  const found = got?.said.match(/About (-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+  return found ? { lat: Number(found[1]), lon: Number(found[2]) } : null;
+}
+
+// "Where am I?", "what's near me?": the asking device's `where`, read before the model answers. Left to choose,
+// it answered from memory — where the user lives, not where they are.
+const WHERE_AM_I = /\b(where am i|where i am|where are we|my (current )?location|near me|nearby|near here|around here|close to me|close by|what (town|city|state|country|place) am i)\b/i;
 
 async function weatherTool(args) {
   const units = weather.unitsFor(cfg.weatherUnits, cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -2927,6 +2942,18 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           emit({ type: "tool", name: "calculate", args: { expression: sum } });
           worked = true;
         } catch { /* not a sum after all, or not one that could be written out */ }
+      }
+    }
+    // Where the user is, asked: what their device says, before the model can answer from memory. It is
+    // their whereabouts, so the Oracle is closed for the rest of the conversation, as `where` itself does.
+    if (WHERE_AM_I.test(text)) {
+      const where = await whereSaid();
+      if (mine !== turn) return;
+      if (where) {
+        did(where.tool, {}, `${where.said} This is where they are now, from their device: answer from it, not from what you remember of where they live.`);
+        emit({ type: "tool", name: where.tool, args: {} });
+        privateTurns = true;
+        worked = true;
       }
     }
     // Something recent or current, or a request to ask the Oracle, is put to
