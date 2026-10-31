@@ -2417,8 +2417,9 @@ async function weatherTool(args) {
     if (named && !place) return `No place called ${named} could be found. Ask the user which one they mean.`;
     if (!place && cfg.home) place = weather.coordinates(cfg.home) ?? await weather.geocode(cfg.home);
     if (!place) {
+      // Said of the user's device, never of the program on it: Morgan has many clients, and names none of them.
       return "Where the user is is not known: their device does not say, and no home is set. Tell them so, and that they can name a place,"
-        + " turn on Location in Talaris's settings, or set Morgan's home.";
+        + " let their device share its location, or set a home in your settings. Do not name any program or app.";
     }
     return await weather.forecast(place, units);
   } catch (error) {
@@ -2432,7 +2433,7 @@ async function weatherTool(args) {
 // conversation so far, and Morgan's replies would carry what it read.
 let privateTurns = false;
 const PRIVATE_TOOLS = /__(work_patterns|work_log|where)$/;
-const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record or whereabouts from Talaris, which stay with you and never go to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
+const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record or whereabouts, from their device, which stay with you and never go to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
