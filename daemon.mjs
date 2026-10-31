@@ -2403,7 +2403,6 @@ let history = []; // user, assistant and tool messages, without the system promp
 // coordinates go to the weather service rounded, and are not put in the
 // conversation: only the weather is.
 
-const WEATHER = /\b(weather|forecast|rain\w*|snow\w*|sleet|hail|drizzl\w*|temperature|degrees|hot|cold|warm|chilly|freezing|humid\w*|sunny|cloudy|windy|wind|storm\w*|thunder\w*|umbrella|coat|jacket|sunrise|sunset)\b/i;
 
 /** The `where` of the device that was asked: its server's name, or null where none offers one. */
 function wherePick() {
@@ -2450,12 +2449,17 @@ async function whereNow() {
 }
 
 
-async function weatherTool(args) {
+async function weatherTool(args, said = "") {
   const units = weather.unitsFor(cfg.weatherUnits, cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
   try {
-    const named = String(args.place ?? "").trim();
+    const given = String(args.place ?? "").trim();
+    // A place the user named — its town in what they said — is theirs; one the model put in from memory is not,
+    // and the device's own place comes before it ("Clinton, NJ" from memory became Clinton, Iowa, and stayed).
+    const town = given.split(",")[0].trim().toLowerCase();
+    const named = given && town && said.toLowerCase().includes(town) ? given : "";
     let place = named ? await weather.geocode(named) : await whereNow();
     if (named && !place) return `No place called ${named} could be found. Ask the user which one they mean.`;
+    if (!place && given && !named) place = await weather.geocode(given);
     if (!place && cfg.home) place = weather.coordinates(cfg.home) ?? await weather.geocode(cfg.home);
     if (!place) {
       // Said of the user's device, never of the program on it: Morgan has many clients, and names none of them.
@@ -2478,6 +2482,7 @@ const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity 
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
+let wasWeather = false; // the turn before was about the weather: one that follows it is too
 let recalled = []; // earlier exchanges shown to the model this turn
 let remembered = []; // and earlier threads
 let seen = ""; // what was looked at for this turn, before the model was asked
@@ -2914,7 +2919,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // Earlier talk is brought back a thread at a time: what it was about and
     // how it came out, with the exchange or two that bear on this. A single
     // exchange on its own ("yes, do that") often says nothing.
-    const timely = sorted.lookup || sorted.about === "current"; // about how things stand now
+    // About how things stand now: the weather and where the user is too, however they were sorted (sort.mjs).
+    const timely = sorted.lookup || sorted.about === "current" || sorted.weather === true || sorted.where === true;
     const threads = timely ? [] : (await transcript.searchThreads({ query: text, to: began, limit: 2 })).filter((hit) => hit.score >= cfg.threadScore);
     if (process.env.HEYMORGAN_DEBUG) console.error("threads", threads.map((hit) => `${hit.score.toFixed(2)} ${hit.thread.title}`));
     remembered = threads;
@@ -2947,9 +2953,10 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     const sums = sorted.sum;
     // The weather is current, but it has a tool of its own, and is not the Oracle's.
     // "What about in Phoenix?", after a question about the weather, is one too.
-    // Sorted as current or as the world's either way ("the weather on Monday" came as the world's, and went to the
-    // Oracle): a weather question is the weather tool's. One about the user ("I have a cold") is neither.
-    const weathery = ["current", "world"].includes(sorted.about) && (WEATHER.test(text) || (sorted.follows && WEATHER.test(String(last?.content ?? ""))));
+    // The sorter says whether it is a question about the weather (sort.mjs, weather), any day, as it says the rest; a
+    // message that follows a weather question ("is that for Clinton?") is one too, by the sorter's own word that it follows.
+    const weathery = sorted.weather === true || (sorted.follows && wasWeather);
+    wasWeather = weathery;
     let forecastRead = false;
     // Something recent or current is likewise not to be answered from what the model happens to believe.
     const current = sorted.about === "current" && !lookup && !weathery;
@@ -2972,12 +2979,21 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         } catch { /* not a sum after all, or not one that could be written out */ }
       }
     }
+    // Where the user is, needed (sort.mjs, where_user_is): what their device says, read before the model answers —
+    // left to call location itself, it answered from memory. Reading it closes the Oracle (locationTool).
+    if (sorted.where) {
+      const said = await locationTool();
+      if (mine !== turn) return;
+      fresh = true;
+      did("location", {}, said);
+      emit({ type: "tool", name: "location", args: {} });
+    }
     // Something recent or current, or a request to ask the Oracle, is put to
     // the Oracle here. Told to consult it, the model as often wrote "the
     // Oracle says" and made the rest up.
     // Other facts about the world go to it too, unless the router is switched off.
     const kind = current || sorted.oracle ? "current"
-      : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length && !weathery ? "world" : null;
+      : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length ? "world" : null;
     if ((kind === "current" || kind === "world") && privateTurns) {
       did("consult_oracle", { question: text }, PRIVATE_REFUSAL);
     } else if (kind === "current" || kind === "world") {
@@ -3221,10 +3237,14 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         } else if (call.function.name === "location") {
           emit({ type: "tool", name: "location", args: {} });
           result = await locationTool();
+          fresh = true;
           if (mine !== turn) return;
         } else if (call.function.name === "weather") {
           emit({ type: "tool", name: "weather", args: call.function.arguments ?? {} });
-          result = await weatherTool(call.function.arguments ?? {});
+          // What the user said, this turn and the one before ("and in Phoenix?" names it there): to tell a named place from one put in.
+          result = await weatherTool(call.function.arguments ?? {}, `${text} ${String(last?.content ?? "")}`);
+          // A forecast is how the sky stood then: not to be brought back as memory (transcript's live).
+          fresh = true;
           if (mine !== turn) return;
           forecastRead = true;
         } else if (call.function.name === "recall_document") {

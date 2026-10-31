@@ -102,7 +102,47 @@ const instructions = (name) => [
   "Not for what was said a moment ago in this conversation, and not for facts about the user.",
 ].join("\n");
 
-// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files }, or null if it could not be sorted.
+// Whether the message is about the weather, and whether it turns on where the user is: asked apart from the rest,
+// in a call of its own made alongside it. Asked in the same instructions, these moved the model's other sortings
+// (a note to jot down taken for something to keep, "make it four" for no reminder: tests/sort.mjs, every way it
+// was tried); asked apart, the rest is sorted exactly as before.
+const PLACE_SCHEMA = { type: "object", properties: { weather: { type: "boolean" }, where_user_is: { type: "boolean" } }, required: ["weather", "where_user_is"] };
+const placeInstructions = (name) => [
+  `Two questions about the user's latest message to ${name}, a voice assistant. Do not answer the message.`,
+  "",
+  "weather: does the user ask about the weather or a forecast, for any day and any place, or about something that turns on",
+  "it: rain, snow, temperature, wind, an umbrella or a coat, what to wear outside? A message that follows a question about the",
+  "weather and asks more about it is one too. False for weather as a figure of speech (\"under the weather\", \"a cold\") and",
+  "for climate as a subject of fact (\"why is the Sahara dry?\").",
+  "",
+  "where_user_is: does answering depend on where the user is at this moment: where they are, what is near them or nearby, how",
+  "far something is from here, what is around here, the local time where they are? False for where they live or work as a",
+  "fact about them (\"where do I live?\"), and false when a place is named instead (\"what's near Times Square?\").",
+].join("\n");
+
+async function sortPlace({ url, model, keepAlive, name }, text, before) {
+  try {
+    const answer = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        model, stream: false, think: false, keep_alive: keepAlive, options: { temperature: 0 }, format: PLACE_SCHEMA,
+        messages: [
+          { role: "system", content: placeInstructions(name) },
+          { role: "user", content: `${before ? `Said just before:\n${before}\n\n` : ""}The message:\n${text}` },
+        ],
+      }),
+    });
+    const got = JSON.parse((await answer.json()).message?.content ?? "{}");
+    return { weather: got.weather === true, where: got.where_user_is === true };
+  } catch (error) {
+    console.error(`sort (weather, place): ${error.message}`);
+    return { weather: false, where: false };
+  }
+}
+
+// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files, weather, where }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
   // The user's words whole, and the gist of each reply: a reply's opening is
@@ -113,6 +153,8 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
     .filter((sentence) => !/^(let me|i['’]ll|i will|i['’]m going to|i am going to|i['’]d need to|first,? i)\b/i.test(sentence)).join(" ").slice(0, 300);
   const before = earlier.filter((message) => message.role !== "tool" && message.content).slice(-4)
     .map((message) => (message.role === "user" ? `User: ${message.content.slice(0, 500)}` : `${name}: ${gist(message.content)}`)).join("\n");
+  // The weather and the user's place, asked at the same time, apart (sortPlace).
+  const place = sortPlace({ url, model, keepAlive, name }, text, before);
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: "POST",
@@ -135,7 +177,10 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
       follows: sorted.follows === true, about: sorted.about, lookup: calls.has("calendar_tasks_or_notes"), sum: calls.has("sum"),
       oracle: calls.has("oracle"), change: calls.has("asks_for_change"), reminder: calls.has("reminder_or_timer"),
       keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"), earlier: calls.has("earlier_talk"), files: calls.has("computer_files"),
+      ...(await place),
     };
+    // The weather, any day, is current: what a forecast says now, not a settled fact of the world.
+    if (turn.weather && turn.about === "world") turn.about = "current";
     // The answer to a question about the user's files or earlier talk is in
     // the file or the record, whatever its subject: never the Oracle's, and
     // never a lookup in their services or a look at the screen.

@@ -2158,5 +2158,104 @@
    "look": false,
    "earlier": false
   }
+ },
+ {
+  "say": "What's the weather on Monday?",
+  "want": {
+   "weather": true,
+   "where": false,
+   "about": "current"
+  }
+ },
+ {
+  "say": "Will it rain tomorrow?",
+  "want": {
+   "weather": true,
+   "about": "current"
+  }
+ },
+ {
+  "say": "Do I need an umbrella this afternoon?",
+  "want": {
+   "weather": true
+  }
+ },
+ {
+  "say": "What's the forecast for Tempe next week?",
+  "want": {
+   "weather": true,
+   "about": "current"
+  }
+ },
+ {
+  "say": "What should I wear outside today?",
+  "want": {
+   "weather": true
+  }
+ },
+ {
+  "say": "I'm feeling a bit under the weather.",
+  "want": {
+   "weather": false
+  }
+ },
+ {
+  "say": "Why is the Sahara so dry?",
+  "want": {
+   "weather": false
+  }
+ },
+ {
+  "say": "Where am I?",
+  "want": {
+   "where": true,
+   "weather": false
+  }
+ },
+ {
+  "say": "Any good coffee shops near me?",
+  "want": {
+   "where": true
+  }
+ },
+ {
+  "say": "How far is the airport from here?",
+  "want": {
+   "where": true
+  }
+ },
+ {
+  "say": "Where do I live?",
+  "want": {
+   "where": false
+  }
+ },
+ {
+  "say": "What's near Times Square?",
+  "want": {
+   "where": false
+  }
+ },
+ {
+  "say": "Is that actually Clinton NJ?",
+  "after": [
+   {
+    "role": "user",
+    "content": "Weather tomorrow?"
+   },
+   {
+    "role": "assistant",
+    "content": "Tomorrow in Clinton, NJ: a high near 59°F, a low around 43°F, and a 60–70% chance of rain."
+   }
+  ],
+  "want": {
+   "follows": true
+  }
+ },
+ {
+  "say": "How far is Boston from Chicago?",
+  "want": {
+   "where": false
+  }
  }
 ]
