@@ -106,7 +106,7 @@ const instructions = (name) => [
 // in a call of its own made alongside it. Asked in the same instructions, these moved the model's other sortings
 // (a note to jot down taken for something to keep, "make it four" for no reminder: tests/sort.mjs, every way it
 // was tried); asked apart, the rest is sorted exactly as before.
-const PLACE_SCHEMA = { type: "object", properties: { weather: { type: "boolean" }, where_user_is: { type: "boolean" } }, required: ["weather", "where_user_is"] };
+const PLACE_SCHEMA = { type: "object", properties: { weather: { type: "boolean" }, where_user_is: { type: "boolean" }, place: { type: "string" } }, required: ["weather", "where_user_is", "place"] };
 const placeInstructions = (name) => [
   `Two questions about the user's latest message to ${name}, a voice assistant. Do not answer the message.`,
   "",
@@ -117,7 +117,12 @@ const placeInstructions = (name) => [
   "",
   "where_user_is: does answering depend on where the user is at this moment: where they are, what is near them or nearby, how",
   "far something is from here, what is around here, the local time where they are? False for where they live or work as a",
-  "fact about them (\"where do I live?\"), and false when a place is named instead (\"what's near Times Square?\").",
+  "fact about them (\"where do I live?\"), and false when the places are named instead (\"what's near Times Square?\",",
+  "\"how far is Boston from Chicago?\"): only here, me and nearby point at where the user is.",
+  "",
+  "place: when the message is about the weather, the place the user names for it, as they say it, with its state or country",
+  "if they give one (\"Tempe\", \"Clinton, NJ\", \"Paris, France\"); a message that follows takes the place it asks about.",
+  "Empty when they name none (\"what's the weather tomorrow?\") or when it is not about the weather.",
 ].join("\n");
 
 async function sortPlace({ url, model, keepAlive, name }, text, before) {
@@ -135,10 +140,10 @@ async function sortPlace({ url, model, keepAlive, name }, text, before) {
       }),
     });
     const got = JSON.parse((await answer.json()).message?.content ?? "{}");
-    return { weather: got.weather === true, where: got.where_user_is === true };
+    return { weather: got.weather === true, where: got.where_user_is === true, place: got.weather === true ? String(got.place ?? "").trim().slice(0, 80) : "" };
   } catch (error) {
     console.error(`sort (weather, place): ${error.message}`);
-    return { weather: false, where: false };
+    return { weather: false, where: false, place: "" };
   }
 }
 

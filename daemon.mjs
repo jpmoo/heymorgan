@@ -2981,6 +2981,18 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         } catch { /* not a sum after all, or not one that could be written out */ }
       }
     }
+    // The weather, asked (sort.mjs, weather): the forecast fetched here, before the model answers, for the place named
+    // or where the user is — as a sum is worked out first. Left to call it, it said "I'll check now" and did not.
+    if (weathery) {
+      const args = sorted.place ? { place: sorted.place } : {};
+      emit({ type: "tool", name: "weather", args });
+      const forecast = await weatherTool(args, `${text} ${String(last?.content ?? "")}`);
+      if (mine !== turn) return;
+      did("weather", args, forecast);
+      forecastRead = true;
+      called = true;
+      fresh = true;
+    }
     // Where the user is, needed (sort.mjs, where_user_is): what their device says, read before the model answers —
     // left to call location itself, it answered from memory. Reading it closes the Oracle (locationTool).
     if (sorted.where) {
