@@ -500,6 +500,15 @@ const MORGAN_TOOLS = [{
 }, {
   type: "function",
   function: {
+    name: "location",
+    description: "Where the user is right now: a place (to about a kilometre, or only to the nearest town), its time zone and local time. "
+      + "Call it whenever your answer depends on where they are — what is near them, how far something is, \"here\", their local time — "
+      + "rather than assuming from memory: it asks the device they are using, and says so if that cannot tell, so you can go by memory.",
+    parameters: { type: "object", properties: {} },
+  },
+}, {
+  type: "function",
+  function: {
     name: "search_conversations",
     description: "Search everything said in earlier conversations, by subject, by date, or both.",
     parameters: {
@@ -2399,7 +2408,7 @@ function wherePick() {
   const own = [...mcpAll].filter(([, held]) => held.tools?.some?.((tool) => tool.name === "where"));
   const asking = links.get(turnFrom)?.name;
   const pick = own.find(([, held]) => held.device === asking) ?? (ROLE === "server" ? null : own[0]);
-  return pick && mcpTools.some((tool) => tool.function.name === `${pick[0]}__where`) ? pick[0] : null;
+  return pick && mcpClients.has(pick[0]) ? pick[0] : null;
 }
 
 /** What the asking device's `where` says: its words as the device gives them, or null. */
@@ -2414,15 +2423,29 @@ async function whereSaid() {
   }
 }
 
+/**
+ * `location`, the model's one way to where the user is: the asking device's
+ * `where` first; where it cannot say, Morgan's home setting, else what is
+ * remembered — said to be that. Read from the device, it is their
+ * whereabouts: the Oracle is closed for the rest of the conversation.
+ */
+async function locationTool() {
+  const got = await whereSaid();
+  if (got && /About -?\d/.test(got.said)) {
+    privateTurns = true;
+    return `${got.said} This is where they are now, from the device they are using.`;
+  }
+  const home = cfg.home ? ` Their home, as set: ${cfg.home}.` : "";
+  return `Their device does not say where they are.${home} Go by that, or by what you remember of where they are or live,`
+    + " and say it is from memory, not from their device. If you have nothing, say you do not know; do not guess.";
+}
+
 async function whereNow() {
   const got = await whereSaid();
   const found = got?.said.match(/About (-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
   return found ? { lat: Number(found[1]), lon: Number(found[2]) } : null;
 }
 
-// "Where am I?", "what's near me?": the asking device's `where`, read before the model answers. Left to choose,
-// it answered from memory — where the user lives, not where they are.
-const WHERE_AM_I = /\b(where am i|where i am|where are we|my (current )?location|near me|nearby|near here|around here|close to me|close by|what (town|city|state|country|place) am i)\b/i;
 
 async function weatherTool(args) {
   const units = weather.unitsFor(cfg.weatherUnits, cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -2944,18 +2967,6 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         } catch { /* not a sum after all, or not one that could be written out */ }
       }
     }
-    // Where the user is, asked: what their device says, before the model can answer from memory. It is
-    // their whereabouts, so the Oracle is closed for the rest of the conversation, as `where` itself does.
-    if (WHERE_AM_I.test(text)) {
-      const where = await whereSaid();
-      if (mine !== turn) return;
-      if (where) {
-        did(where.tool, {}, `${where.said} This is where they are now, from their device: answer from it, not from what you remember of where they live.`);
-        emit({ type: "tool", name: where.tool, args: {} });
-        privateTurns = true;
-        worked = true;
-      }
-    }
     // Something recent or current, or a request to ask the Oracle, is put to
     // the Oracle here. Told to consult it, the model as often wrote "the
     // Oracle says" and made the rest up.
@@ -3201,6 +3212,10 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           const sum = String(call.function.arguments?.expression ?? "");
           try { result = `${sum} = ${calculate(sum)}`; worked = true; } catch (error) { result = `That could not be worked out: ${error.message}. Write the sum with numbers and + - * / ^ % and brackets only.`; }
           emit({ type: "tool", name: "calculate", args: { expression: sum } });
+        } else if (call.function.name === "location") {
+          emit({ type: "tool", name: "location", args: {} });
+          result = await locationTool();
+          if (mine !== turn) return;
         } else if (call.function.name === "weather") {
           emit({ type: "tool", name: "weather", args: call.function.arguments ?? {} });
           result = await weatherTool(call.function.arguments ?? {});
@@ -3302,7 +3317,9 @@ async function morgan(mine, onText) {
       think: cfg.ollama.think,
       keep_alive: cfg.ollama.keepAlive,
       // With memory in front of it whole there is nothing for recall to fetch.
-      tools: [...MORGAN_TOOLS.filter((tool) => !(memoryInFull() && tool.function.name === "recall")), ...sightTools(), ...fileTools(), ...documentTools(), ...mcpTools],
+      // A device's own `where` is asked through `location`, which knows which device is asking and what to do if none can say.
+      tools: [...MORGAN_TOOLS.filter((tool) => !(memoryInFull() && tool.function.name === "recall")), ...sightTools(), ...fileTools(), ...documentTools(),
+        ...mcpTools.filter((tool) => !tool.function.name.endsWith("__where"))],
       messages: withNotes([{ role: "system", content: morganPrompt() }, ...history]),
     }),
   });
