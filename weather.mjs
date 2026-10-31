@@ -30,15 +30,23 @@ async function get(url) {
 }
 
 // A place by name: its coordinates and the name to say, or null.
+// US states by their postal abbreviations: "Clinton, NJ".
+const STATES = Object.fromEntries("AL Alabama|AK Alaska|AZ Arizona|AR Arkansas|CA California|CO Colorado|CT Connecticut|DE Delaware|DC District of Columbia|FL Florida|GA Georgia|HI Hawaii|ID Idaho|IL Illinois|IN Indiana|IA Iowa|KS Kansas|KY Kentucky|LA Louisiana|ME Maine|MD Maryland|MA Massachusetts|MI Michigan|MN Minnesota|MS Mississippi|MO Missouri|MT Montana|NE Nebraska|NV Nevada|NH New Hampshire|NJ New Jersey|NM New Mexico|NY New York|NC North Carolina|ND North Dakota|OH Ohio|OK Oklahoma|OR Oregon|PA Pennsylvania|RI Rhode Island|SC South Carolina|SD South Dakota|TN Tennessee|TX Texas|UT Utah|VT Vermont|VA Virginia|WA Washington|WV West Virginia|WI Wisconsin|WY Wyoming"
+  .split("|").map((pair) => [pair.slice(0, 2).toLowerCase(), pair.slice(3).toLowerCase()]));
+
+// A place by name. Open-Meteo finds by the name alone and ranks by size, so a small town sits behind the
+// bigger ones of its name: a hundred are asked for, and what follows a comma — a state (by name or
+// abbreviation), a county, a country — keeps the ones it names; with nothing after it, the most populous.
 export async function geocode(name) {
   const [town, ...rest] = String(name).split(",").map((part) => part.trim()).filter(Boolean);
   if (!town) return null;
-  const found = await get(`https://geocoding-api.open-meteo.com/v1/search?${new URLSearchParams({ name: town, count: "10", language: "en" })}`);
+  const found = await get(`https://geocoding-api.open-meteo.com/v1/search?${new URLSearchParams({ name: town, count: "100", language: "en" })}`);
   const places = found.results ?? [];
-  // "Portland, Maine": the one whose state or country is named, else the most populous.
-  const hint = rest.join(" ").toLowerCase();
-  const named = hint ? places.find((p) => [p.admin1, p.country, p.country_code].some((part) => part && (hint.includes(part.toLowerCase()) || part.toLowerCase().includes(hint)))) : null;
-  const place = named ?? places[0];
+  const wants = rest.map((part) => part.toLowerCase()).map((part) => STATES[part] ?? part);
+  const says = (p) => [p.admin1, p.admin2, p.admin2 ? `${p.admin2} county` : "", p.country, p.country_code].filter(Boolean).map((part) => part.toLowerCase());
+  const named = wants.length ? places.filter((p) => wants.every((want) => says(p).some((part) => part === want || part.includes(want)))) : places;
+  // Of those named, the one with people counted first (a town, not a dam or a reservoir of its name).
+  const place = named.find((p) => p.population) ?? named[0];
   if (!place) return null;
   return { lat: place.latitude, lon: place.longitude, name: [place.name, place.admin1, place.country_code === "US" ? "" : place.country].filter(Boolean).join(", ") };
 }
