@@ -2947,7 +2947,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     const sums = sorted.sum;
     // The weather is current, but it has a tool of its own, and is not the Oracle's.
     // "What about in Phoenix?", after a question about the weather, is one too.
-    const weathery = sorted.about === "current" && (WEATHER.test(text) || (sorted.follows && WEATHER.test(String(last?.content ?? ""))));
+    // Sorted as current or as the world's either way ("the weather on Monday" came as the world's, and went to the
+    // Oracle): a weather question is the weather tool's. One about the user ("I have a cold") is neither.
+    const weathery = ["current", "world"].includes(sorted.about) && (WEATHER.test(text) || (sorted.follows && WEATHER.test(String(last?.content ?? ""))));
     let forecastRead = false;
     // Something recent or current is likewise not to be answered from what the model happens to believe.
     const current = sorted.about === "current" && !lookup && !weathery;
@@ -2975,7 +2977,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // Oracle says" and made the rest up.
     // Other facts about the world go to it too, unless the router is switched off.
     const kind = current || sorted.oracle ? "current"
-      : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length ? "world" : null;
+      : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length && !weathery ? "world" : null;
     if ((kind === "current" || kind === "world") && privateTurns) {
       did("consult_oracle", { question: text }, PRIVATE_REFUSAL);
     } else if (kind === "current" || kind === "world") {
