@@ -2483,6 +2483,7 @@ let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
 let lastFiled = 0; // the exchange most recently filed, for "that was wrong"
 let wasWeather = false; // the turn before was about the weather: one that follows it is too
+let used = []; // the tools called this turn, by name, for the journal
 let recalled = []; // earlier exchanges shown to the model this turn
 let remembered = []; // and earlier threads
 let seen = ""; // what was looked at for this turn, before the model was asked
@@ -2915,6 +2916,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   fresh = false;
   noted = [];
   steps = [];
+  used = [];
   try {
     // Earlier talk is brought back a thread at a time: what it was about and
     // how it came out, with the exchange or two that bear on this. A single
@@ -3280,6 +3282,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           setState("thinking");
         }
         history.push({ role: "tool", tool_name: call.function.name, content: result });
+        used.push(call.function.name);
       }
       if (proposals.length) {
         // The turn ends here, on a question the model does not get to answer for the user.
@@ -3307,6 +3310,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     sourced(noted, [filed]);
     // So that whatever is showing the conversation can offer to mark this answer.
     emit({ type: "filed", t: filed });
+    // How the turn went, for the journal: how it was sorted and what was called — never what was said.
+    console.error(`turn: ${[sorted.about ?? "unsorted", ...["follows", "weather", "where", "lookup", "sum", "change"].filter((key) => sorted[key])].join(" ")}`
+      + `; tools: ${used.length ? used.join(", ") : "none"}${privateTurns ? "; Oracle closed" : ""}`);
     transcript.add({
       t: filed,
       user: text,
@@ -3400,6 +3406,7 @@ function reset() {
 // the model takes it for something from an earlier turn, and answers "I had
 // already saved that" about a thing saved a moment ago.
 function did(name, args, result) {
+  used.push(name);
   history.push(
     { role: "assistant", content: "", tool_calls: [{ function: { name, arguments: args } }] },
     { role: "tool", tool_name: name, content: result },
