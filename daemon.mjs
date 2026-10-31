@@ -3174,7 +3174,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
             + " asked for; calling it puts the action forward, and the user is then asked for you.";
           continue;
         }
-        reply.content = "I didn't manage to do that: nothing has been changed. Try asking once more, and if it still doesn't go through, it's worth checking that Hermes is up.";
+        // No program named: what it was asked to change may be held by any of them, or by Morgan itself.
+        reply.content = "I didn't manage to do that: nothing has been changed. Try asking once more; if it still doesn't go through, what holds it may not be answering.";
       }
       history.push(reply);
       if (reply.content) {
@@ -3236,6 +3237,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
             + "something to remember about the user. Only what they tell you about themselves is.";
         } else if (call.function.name !== "consult_oracle") {
           result = await memoryTool(call.function.name, call.function.arguments ?? {});
+          // Its own memory changed is a change made: a reply saying so is true, not one to be sent back.
+          if (["remember", "rewrite_topic"].includes(call.function.name) && /^(Saved|Rewrote|Deleted)/.test(result)) acted = true;
         } else if (privateTurns) {
           result = PRIVATE_REFUSAL;
         } else {
