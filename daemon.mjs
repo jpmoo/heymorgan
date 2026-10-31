@@ -5376,6 +5376,9 @@ const CHAT_PANEL = "jpmoo/morgan:chat";
 
 function bindHotkey() {
   if (!cfg.hotkey) return;
+  // A desktop that is Morgan's own face here (Talaris, its socket in the runtime directory) binds Morgan's key
+  // itself, to its own panel: a bind from here would take the key from it, for a panel that is not there.
+  if (existsSync(join(RUNTIME, "talaris.sock"))) return;
   // Only a key combination ("SUPER, M"): the setting goes into a Hyprland command line.
   if (!/^[A-Za-z0-9_ ]*,\s*[A-Za-z0-9_]+$/.test(cfg.hotkey)) return console.error(`hotkey: "${cfg.hotkey}" is not a key combination like "SUPER, M"; not bound`);
   const shell = join(HOME, ".local", "bin", "noctalia");
