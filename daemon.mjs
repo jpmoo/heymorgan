@@ -27,6 +27,7 @@ import { LOCAL_ONLY, createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
 import { sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
+import * as weather from "./weather.mjs";
 import { createAccess } from "./access.mjs";
 import { closest, deviceStore, voiceStore } from "./speaker.mjs";
 import { SPEECH_DEFAULTS, createSpeech, remoteSpeech } from "./speech.mjs";
@@ -203,6 +204,12 @@ const defaults = {
   // Morgan said about the time — "It is …" in what the model reads, the
   // record's times, "today" — was hours off for the person asking.
   timeZone: null,
+  // Where the weather is for when the device asked cannot say where it is (one
+  // with no Talaris, such as a speaker): a town ("Portland, Maine") or
+  // coordinates ("43.66, -70.26"). Empty: only where a device says it is.
+  home: "",
+  // "f", "c", or "auto": Fahrenheit where the user's clock is in the United States.
+  weatherUnits: "auto",
 };
 
 const configPath = process.env.HEYMORGAN_CONFIG ?? join(CONFIG_HOME, "config.json");
@@ -267,7 +274,7 @@ const BRAIN = ROLE !== "client";
 // Settings that are looked at each time they are used take effect as soon as
 // the file is saved, without waiting for the settings menu to be closed and
 // the daemon restarted. (Voices, servers and the microphone still need that.)
-const LIVE = ["visionModel", "similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply", "timeZone"];
+const LIVE = ["home", "weatherUnits", "visionModel", "similarFloor", "knownVoicesOnly", "voiceThreshold", "userName", "folders", "sight", "pronunciations", "style", "followUpSeconds", "endSilenceMs", "recallScore", "consultLine", "wakeReply", "timeZone"];
 watchFile(configPath, { interval: 1000 }, () => {
   try {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
@@ -480,6 +487,15 @@ const MORGAN_TOOLS = [{
     description: "Work out arithmetic exactly. Use it for every sum, percentage, average or conversion, however easy it looks: "
       + "never do arithmetic in your head. Write the sum out, as in 17% of 3480, (450 + 50) * 0.74, 100 - 15%, sqrt(2), average(72, 88, 95).",
     parameters: { type: "object", properties: { expression: { type: "string", description: "The sum, written out" } }, required: ["expression"] },
+  },
+}, {
+  type: "function",
+  function: {
+    name: "weather",
+    description: "The weather now, over the next hours, and for each of the next seven days, from a weather service. Use it for every question "
+      + "about the weather, rain, snow, temperature or what to wear outside, today or any day this week. Give a place only when the user names one; "
+      + "with none, it is the weather where the user is.",
+    parameters: { type: "object", properties: { place: { type: "string", description: "A town or city the user named, with its state or country if they gave one" } } },
   },
 }, {
   type: "function",
@@ -2367,6 +2383,49 @@ const transcript = new Transcript({
 });
 
 let history = []; // user, assistant and tool messages, without the system prompt
+// ---------------------------------------------------------------- the weather
+//
+// Where it is for: the place the user named; else where the device that was
+// asked says it is (Talaris's `where`, which only that device offers, and only
+// when its Location lets Morgan know); else the `home` setting. The
+// coordinates go to the weather service rounded, and are not put in the
+// conversation: only the weather is.
+
+const WEATHER = /\b(weather|forecast|rain\w*|snow\w*|sleet|hail|drizzl\w*|temperature|degrees|hot|cold|warm|chilly|freezing|humid\w*|sunny|cloudy|windy|wind|storm\w*|thunder\w*|umbrella|coat|jacket|sunrise|sunset)\b/i;
+
+async function whereNow() {
+  // The asking device's own `where` first: another device's may be in another town.
+  const own = [...mcpAll].filter(([, held]) => held.tools?.some?.((tool) => tool.name === "where"));
+  const asking = links.get(turnFrom)?.name;
+  const pick = own.find(([, held]) => held.device === asking) ?? (ROLE === "server" ? null : own[0]);
+  if (!pick || !mcpTools.some((tool) => tool.function.name === `${pick[0]}__where`)) return null;
+  try {
+    const said = String(await mcpClients.get(pick[0]).call("where", {}));
+    const found = said.match(/About (-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+    return found ? { lat: Number(found[1]), lon: Number(found[2]) } : null;
+  } catch (error) {
+    console.error(`weather: could not ask where the user is: ${error.message}`);
+    return null;
+  }
+}
+
+async function weatherTool(args) {
+  const units = weather.unitsFor(cfg.weatherUnits, cfg.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  try {
+    const named = String(args.place ?? "").trim();
+    let place = named ? await weather.geocode(named) : await whereNow();
+    if (named && !place) return `No place called ${named} could be found. Ask the user which one they mean.`;
+    if (!place && cfg.home) place = weather.coordinates(cfg.home) ?? await weather.geocode(cfg.home);
+    if (!place) {
+      return "Where the user is is not known: their device does not say, and no home is set. Tell them so, and that they can name a place,"
+        + " turn on Location in Talaris's settings, or set Morgan's home.";
+    }
+    return await weather.forecast(place, units);
+  } catch (error) {
+    return `The weather could not be fetched: ${error.message}. Say so; do not guess.`;
+  }
+}
+
 // Talaris's record of what the user does (its activity tools, through its MCP),
 // and where the user is (its `where`), never reach the Oracle: once Morgan has read either in a conversation, the
 // Oracle is not consulted again until the next one — the Oracle is sent the
@@ -2844,8 +2903,12 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     const lookup = mcpTools.length > 0 && (sorted.lookup || (sorted.follows && words(text).length <= 4 && lookups.has(last)));
     // A sum is likewise not to be answered without being worked out.
     const sums = sorted.sum;
+    // The weather is current, but it has a tool of its own, and is not the Oracle's.
+    // "What about in Phoenix?", after a question about the weather, is one too.
+    const weathery = sorted.about === "current" && (WEATHER.test(text) || (sorted.follows && WEATHER.test(String(last?.content ?? ""))));
+    let forecastRead = false;
     // Something recent or current is likewise not to be answered from what the model happens to believe.
-    const current = sorted.about === "current" && !lookup;
+    const current = sorted.about === "current" && !lookup && !weathery;
     let worked = false;
     let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
@@ -3009,6 +3072,13 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         spoke = true;
         speakDelta(`${reply.content} `);
       }
+      // Nor can the weather: an answer about it given without the forecast is sent back for it.
+      if (weathery && !forecastRead && !reply.tool_calls?.length && !corrected) {
+        corrected = true;
+        seen += " You have just drafted an answer about the weather without looking at the forecast. You cannot know it. Call weather now"
+          + " (with the place, if the user named one), and answer from what it returns.";
+        continue;
+      }
       // Something current cannot be known without asking: an answer given with no lookup is sent back.
       if (current && !called && !reply.tool_calls?.length && !corrected) {
         corrected = true;
@@ -3103,6 +3173,11 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           const sum = String(call.function.arguments?.expression ?? "");
           try { result = `${sum} = ${calculate(sum)}`; worked = true; } catch (error) { result = `That could not be worked out: ${error.message}. Write the sum with numbers and + - * / ^ % and brackets only.`; }
           emit({ type: "tool", name: "calculate", args: { expression: sum } });
+        } else if (call.function.name === "weather") {
+          emit({ type: "tool", name: "weather", args: call.function.arguments ?? {} });
+          result = await weatherTool(call.function.arguments ?? {});
+          if (mine !== turn) return;
+          forecastRead = true;
         } else if (call.function.name === "recall_document") {
           result = recallDocument(call.function.arguments ?? {});
         } else if (["list_folder", "find_files", "read_file"].includes(call.function.name)) {

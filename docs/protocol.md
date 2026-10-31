@@ -1,10 +1,15 @@
 # Morgan's client protocol
 
-**Version 1.11**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.12**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`, `speech.mjs`, `speaker.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.12** (2026-10-31): `home` and `weatherUnits` in `config.get` and
+  `config.set`. Morgan answers the weather itself, from Open-Meteo, for a place
+  named, or where the asking device says it is (Talaris's `where`), or `home` (a
+  town, or "lat, lon"), in `weatherUnits` (`auto`: °F where the time zone is in
+  the United States, else °C; `f`; `c`). Both take effect at once.
 - **1.11** (2026-10-30): **brain and device.** Wherever the brain runs it is
   a server, for however many devices: a laptop with its own brain runs it as a
   second service (`heymorgan serve`, heymorgan-brain) and its device reaches it

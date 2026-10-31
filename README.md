@@ -37,6 +37,7 @@ Morgan", the one that heard it best answers. See [protocol.md](docs/protocol.md)
 | `lib.mjs` | Paths, defaults, the Oracle's login, encryption. |
 | `history.mjs` | Every exchange, sealed, with embeddings for finding earlier ones. |
 | `admin.mjs` | What the settings window may ask of the daemon: `heymorgan admin {"op": ..., "args": ...}`. |
+| `weather.mjs` | The weather from Open-Meteo (no key): for a place named, where the asking device is, or `home`. |
 | `reminders.mjs` | Timers and reminders: working out when they are due. |
 | `speaker.mjs` | Taught voiceprints: the set every device shares, and a device's own. |
 | `mcp.mjs` | A small MCP client (stdio and HTTP with a header key; no OAuth). |
