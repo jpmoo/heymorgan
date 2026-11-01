@@ -2189,7 +2189,9 @@ const changes = new Set(); // names of the tools that change things
 const NOT_A_LOOKUP = new Set(["search_conversations", "weather", "location", "calculate", "consult_oracle", "remember", "rewrite_topic",
   "remember_picture", "forget_picture"]);
 let proposals = []; // [{ name, args }], all put forward in the same turn
-let agreedTo = ""; // a question the user has just said yes to, asked in words with no proposal behind it
+let agreedTo = ""; // what the user said yes to this turn: the question asked, and what was carried out on it
+/** Changes a yes never covers beyond what it named: what takes something away is asked about each time. */
+const TAKES_AWAY = /(delete|remove|archive|trash|clear|cancel|unlink|disconnect)/i;
 let acted = false; // something was put forward or carried out in this turn
 
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
@@ -2230,7 +2232,14 @@ async function settleProposal(text) {
     did(name, args, `Carried out just now, on the user's yes. ${result}`);
   }
   acted = true;
-  return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again; tell them briefly how it went.";
+  // The yes stands for the rest of this turn's work on what it named and what it made: filling in the page it just
+  // created was asked about again ("…so is it okay if I do that?") after the user had said yes to making it.
+  const asked = history.filter((message) => message.role === "assistant" && message.content).at(-1)?.content ?? "";
+  agreedTo = [asked, ...waiting.map(({ args }) => JSON.stringify(args)),
+    ...history.slice(-2 * waiting.length).filter((m) => m.role === "tool").map((m) => String(m.content ?? ""))].join(" ");
+  return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again for it. If"
+    + " what they asked for is not finished (the page made still needs its words), finish it now: what finishes it goes ahead on"
+    + " the same yes. Then tell them briefly how it went.";
 }
 
 // The sum in what the user said, written out for the calculator; "" if there is none.
@@ -2370,8 +2379,19 @@ async function mcpTool(name, given) {
     const omitted = left.length ? ` (Left out, because the user did not ask for them: ${left.join(", ")}. Do not add what was not asked for.)` : "";
     // The user has just said yes to a question about this very thing: every
     // particular now given was in the question, so it goes ahead on that yes.
-    if (agreedTo && particulars(args).length && particulars(args).every((value) => plain(agreedTo).includes(plain(value)))) {
-      agreedTo = "";
+    // On the yes given this turn: every name and place it gives is one the yes covered (the question asked, or what was
+    // carried out on it) — a page's words or a note's text, long or of several lines, are what was asked for, not names
+    // to match — and it
+    // takes nothing away. The yes stands for the rest of the turn.
+    // Nor are a tool's set choices names ("replace", "page"): those its own schema lists as the values it takes.
+    const props = mcpTools.find((entry) => entry.function.name === name)?.function?.parameters?.properties ?? {};
+    const named = Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !Array.isArray(props[key]?.enum)));
+    const names = particulars(named).filter((value) => value.length <= 80 && !value.includes("\n"));
+    // Word by word: "Home/Packing List" is the Home project and the Packing List page, both agreed to, written as a path.
+    const bits = (text) => String(text).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    const agreedWords = new Set(bits(agreedTo));
+    const covered = (value) => bits(value).every((w) => agreedWords.has(w));
+    if (agreedTo && names.length && !TAKES_AWAY.test(name) && names.every(covered)) {
       acted = true;
       emit({ type: "confirm", name, args });
       emit({ type: "confirm", name, done: true });
@@ -3003,6 +3023,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // "search Hermes for packing lists" was answered from a search of old talk, and passed.
     let searched = false;
     let doneTries = 0; // times sent back for saying something was done that was not, or not so
+    let askedAgain = false; // sent back once for asking leave again on the turn the user said yes
     let called = false;
     try { picked = await pickNotes(text); } catch (error) { picked = ""; console.error(error.message); }
     if (mine !== turn) return;
@@ -3250,6 +3271,17 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           continue;
         }
         reply.content = "I couldn't look that up just now, so I won't guess. Try asking once more.";
+      }
+      // Leave asked again, in words, on the very turn the user said yes: what finishes what they agreed to goes ahead on
+      // that yes (mcpTool), but a question cannot use it — "I'm about to add the checklist, shall I?" came after "yes".
+      if (agreedTo && reply.content && !reply.tool_calls?.length && !askedAgain && PERMISSION_ASKED.test(String(reply.content).replace(/[’‘]/g, "'"))) {
+        askedAgain = true;
+        history.push({ role: "assistant", content: String(reply.content), check: true }, {
+          role: "user", check: true,
+          content: `[${cfg.name}'s own check, not the user] The user has already said yes to this. Do not ask again: if finishing what they`
+            + " agreed to needs a change, call its tool now, and it goes ahead on that yes. If it is something new, then ask.",
+        });
+        continue;
       }
       // A reply that says something was done is read against what this turn did (sort.mjs, checkDone), whatever the
       // turn was sorted as: "saved to your routines" (it went to Tech setup) and "I've noted that" (nothing was saved)
