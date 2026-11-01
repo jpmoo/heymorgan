@@ -147,7 +147,57 @@ async function sortPlace({ url, model, keepAlive, name }, text, before) {
   }
 }
 
-// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files, weather, where }, or null if it could not be sorted.
+// Whether what was looked up just before already holds the answer: a question about the user's records is answered from
+// a lookup, but not every one needs a new one. "Which of those tasks go with those events?", straight after both were
+// looked up, was sent back for not looking, twice, and a good answer was replaced with "I couldn't look that up";
+// "and today's?", after tomorrow's, is about something not looked up, and must be. Asked apart, as the place is: one
+// question more in the main sorting unsettled the rest. Only when something was looked up in the turn before.
+const IN_VIEW_SCHEMA = { type: "object", properties: { in_view: { type: "boolean" } }, required: ["in_view"] };
+const inViewInstructions = (name) => [
+  `One question about the user's latest message to ${name}, a voice assistant. Do not answer the message.`,
+  "",
+  "in_view: can the message be answered entirely from what was looked up just before, as shown, without looking anything up",
+  "again? True for a judgment, comparison, choice or summary of what came back (\"which of those tasks go with those",
+  "meetings?\", \"which is most urgent?\", \"say that again\", \"so which day is busiest?\"). False when it asks about anything",
+  "that was not looked up: another day or date, another person, another list, or a part the lookup did not cover (\"and",
+  "today's?\" after tomorrow's were looked up; Tuesday's tasks when only Monday's were); and false when nothing was looked up.",
+].join("\n");
+
+async function sortInView({ url, model, keepAlive, name }, text, before, looked) {
+  if (!looked) return false;
+  try {
+    const answer = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        model, stream: false, think: false, keep_alive: keepAlive, options: { temperature: 0 }, format: IN_VIEW_SCHEMA,
+        messages: [
+          { role: "system", content: inViewInstructions(name) },
+          { role: "user", content: `Said just before:\n${before}\n\nLooked up just before, and what came back:\n${looked}\n\nThe message:\n${text}` },
+        ],
+      }),
+    });
+    return JSON.parse((await answer.json()).message?.content ?? "{}").in_view === true;
+  } catch (error) {
+    console.error(`sort (in view): ${error.message}`);
+    return false;
+  }
+}
+
+/** The lookups of the turn before, each with the start of what came back; empty if there were none. */
+function lookedUp(earlier) {
+  const start = earlier.findLastIndex((message) => message.role === "user");
+  const turn = start < 0 ? [] : earlier.slice(start);
+  const lines = [];
+  for (const message of turn) {
+    for (const call of message.tool_calls ?? []) lines.push(`${call.function?.name}(${JSON.stringify(call.function?.arguments ?? {})})`);
+    if (message.role === "tool") lines.push(`  -> ${String(message.content ?? "").replace(/\s+/g, " ").slice(0, 700)}`);
+  }
+  return lines.join("\n");
+}
+
+// Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files, weather, where, place, inView }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
   // The user's words whole, and the gist of each reply: a reply's opening is
@@ -160,6 +210,8 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
     .map((message) => (message.role === "user" ? `User: ${message.content.slice(0, 500)}` : `${name}: ${gist(message.content)}`)).join("\n");
   // The weather and the user's place, asked at the same time, apart (sortPlace).
   const place = sortPlace({ url, model, keepAlive, name }, text, before);
+  // And whether what was just looked up already answers it (sortInView), at the same time too.
+  const inView = sortInView({ url, model, keepAlive, name }, text, before, lookedUp(earlier));
   try {
     const response = await fetch(`${url}/api/chat`, {
       method: "POST",
@@ -183,6 +235,7 @@ export async function sortTurn({ url, model, keepAlive, name }, text, earlier = 
       oracle: calls.has("oracle"), change: calls.has("asks_for_change"), reminder: calls.has("reminder_or_timer"),
       keep: calls.has("asks_to_keep"), look: calls.has("needs_seeing"), earlier: calls.has("earlier_talk"), files: calls.has("computer_files"),
       ...(await place),
+      inView: await inView,
     };
     // The weather, any day, is current: what a forecast says now, not a settled fact of the world.
     if (turn.weather && turn.about === "world") turn.about = "current";

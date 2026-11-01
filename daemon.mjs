@@ -2953,7 +2953,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // is held back and sent round again.
     // "Try again", after something that was looked up, is looked up again.
     const last = history.filter((message) => message.role === "user").at(-2);
-    const lookup = mcpTools.length > 0 && (sorted.lookup || (sorted.follows && words(text).length <= 4 && lookups.has(last)));
+    // Unless what was looked up just before already answers it (sort.mjs, in view): a judgment about what came back.
+    const lookup = mcpTools.length > 0 && !sorted.inView && (sorted.lookup || (sorted.follows && words(text).length <= 4 && lookups.has(last)));
     // A sum is likewise not to be answered without being worked out.
     const sums = sorted.sum;
     // The weather is current, but it has a tool of its own, and is not the Oracle's.
