@@ -25,7 +25,7 @@ import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
 import { LOCAL_ONLY, createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
-import { sortTurn } from "./sort.mjs";
+import { checkDone, sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
 import * as weather from "./weather.mjs";
 import { createAccess } from "./access.mjs";
@@ -513,7 +513,8 @@ const MORGAN_TOOLS = [{
   type: "function",
   function: {
     name: "search_conversations",
-    description: "Search everything said in earlier conversations, by subject, by date, or both.",
+    description: "Search everything said in earlier conversations, by subject, by date, or both. Not this conversation: all of it is"
+      + " already in front of you, and it comes first for anything said here (\"what we've talked about\", \"from this chat\").",
     parameters: {
       type: "object",
       properties: {
@@ -2591,7 +2592,10 @@ async function searchTool(args) {
   const found = [...about.map((hit) => describeThread(hit, 500)), ...hits.map((hit) => describe(hit, 700))];
   const result = found.length ? found.join("\n") : "Nothing was found.";
   emit({ type: "recall", topic: args.query ? `earlier talk: ${args.query}` : `earlier talk, ${args.from ?? ""} to ${args.to ?? ""}`, body: result.slice(0, 4000) });
-  return result;
+  // Said with every answer: a briefing of "things we've talked about here" was made from earlier conversations alone, and
+  // left out the backpack, the trip and the weather from the one it was asked in.
+  return `${result}\n\n(These are earlier conversations only. Everything said in this conversation is above, in front of you: use it first,`
+    + " and these as well where they bear on what was asked.)";
 }
 
 // Thumbs down: the exchange stays on the record and is kept from the model
@@ -2970,6 +2974,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
     let lookupTries = 0; // times sent back for answering a lookup without looking
+    let doneTries = 0; // times sent back for saying something was done that was not, or not so
     let called = false;
     try { picked = await pickNotes(text); } catch (error) { picked = ""; console.error(error.message); }
     if (mine !== turn) return;
@@ -3213,6 +3218,29 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         }
         reply.content = "I couldn't look that up just now, so I won't guess. Try asking once more.";
       }
+      // A reply that says something was done is read against what this turn did (sort.mjs, checkDone), whatever the
+      // turn was sorted as: "saved to your routines" (it went to Tech setup) and "I've noted that" (nothing was saved)
+      // passed every other check. Sent back as a skipped lookup is, its draft in view; twice at most.
+      if (reply.content && !reply.tool_calls?.length && doneTries < 2) {
+        const from = history.indexOf(asked);
+        const record = (from < 0 ? [] : history.slice(from + 1)).flatMap((message) => [
+          ...(message.tool_calls ?? []).map((call) => `${call.function.name}(${JSON.stringify(call.function.arguments ?? {}).slice(0, 400)})`),
+          ...(message.role === "tool" ? [`  -> ${String(message.content ?? "").replace(/\s+/g, " ").slice(0, 500)}`] : []),
+        ]).join("\n");
+        const check = await checkDone({ ...cfg.ollama, name: cfg.name }, String(reply.content), record);
+        if (mine !== turn) return;
+        if (!check.backed) {
+          doneTries++;
+          console.error(`check: sent back, not as done: ${check.wrong.slice(0, 160)}`);
+          history.push({ role: "assistant", content: String(reply.content), check: true }, {
+            role: "user", check: true,
+            content: `[${cfg.name}'s own check, not the user] ${check.wrong || "That reply says something was done that this turn's record does not show."}`
+              + " Nothing more has been done. Do it now with the tool for it, if it is what the user wants; otherwise tell them plainly what"
+              + ` was and was not done${spoke ? ", correcting in a sentence what they have already heard" : ""}.`,
+          });
+          continue;
+        }
+      }
       if (process.env.HEYMORGAN_DEBUG) console.error("round", JSON.stringify({ guarded, acted, nudges, calls: (reply.tool_calls ?? []).map((call) => call.function.name), said: String(reply.content ?? "").slice(0, 120) }));
       // Curly apostrophes as straight ones: "I’ve updated" went past a check that knew only "I've".
       const plainReply = String(reply.content ?? "").replace(/[’‘]/g, "'");
@@ -3299,6 +3327,12 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           if (["remember", "rewrite_topic"].includes(call.function.name) && /^(Saved|Rewrote|Deleted)/.test(result)) acted = true;
         } else if (privateTurns) {
           result = PRIVATE_REFUSAL;
+        } else if (sorted && !sorted.oracle && !["world", "current"].includes(sorted.about) && !told.length) {
+          // The sorter's word on what a turn needs governs the Oracle, whoever asks for it: a turn about the user's own
+          // things (their weather, read from Morgan's own tool) went to the Oracle anyway, for a town the device never said.
+          result = "Not asked. This turn is about the user's own things, not the wider world, so the Oracle has nothing to add:"
+            + " answer from your tools and what has come back this turn. If something you need is not there, say so; the user can"
+            + " ask you to consult the Oracle if they want it.";
         } else {
           if (!spoke) enqueue(cfg.consultLine);
           setState("consulting");

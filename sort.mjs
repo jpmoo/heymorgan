@@ -197,6 +197,54 @@ function lookedUp(earlier) {
   return lines.join("\n");
 }
 
+// Whether a reply says something was done that was not, or not as it was: read against the record of the turn, the
+// tools called and what they returned. Asked of every reply, whatever the turn was sorted as: "I've saved that to your
+// routines" (it went to Tech setup) and "I've noted that Lizzie won't be joining" (nothing was saved) came on turns no
+// check looked at, because none was sorted as a change.
+const DONE_SCHEMA = { type: "object", properties: { says_done: { type: "boolean" }, all_backed: { type: "boolean" }, what_is_wrong: { type: "string" } },
+  required: ["says_done", "all_backed", "what_is_wrong"] };
+const doneInstructions = (name) => [
+  `${name}, a voice assistant, has written the reply below. Check it against the record of what was done in this turn. Do not`,
+  "rewrite the reply.",
+  "",
+  `says_done: does the reply say ${name} has already done something: saved, noted, remembered, added, moved, removed, changed,`,
+  "sent, set, booked or scheduled something, or put it somewhere? False for what it offers or plans to do (\"I'll add that, is",
+  "that okay?\"), for questions, and for telling the user what it found or what their things hold.",
+  "",
+  "all_backed: if it says so, is every such thing in the record, done as the reply says: the same thing, put in the same",
+  "place? \"Saved to your routines\" when the record says it was saved in Tech setup is not backed; nor is \"I've noted",
+  "that\" when the record shows nothing saved. True when the reply says nothing was done. Check only what it says was done",
+  "now: where things stood already, from earlier in the conversation (\"so it's now only under routines\", of a note saved",
+  "there before), is not a claim about this turn, and neither is a summary of what was done.",
+  "",
+  "what_is_wrong: when not backed, in a sentence, what the reply says that the record does not show, or shows otherwise.",
+  "Empty otherwise.",
+].join("\n");
+
+/** { saysDone, backed, wrong } for a reply against its turn's record (lines: each tool called and what it returned). */
+export async function checkDone({ url, model, keepAlive, name }, reply, record) {
+  try {
+    const answer = await fetch(`${url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        model, stream: false, think: false, keep_alive: keepAlive, options: { temperature: 0 }, format: DONE_SCHEMA,
+        messages: [
+          { role: "system", content: doneInstructions(name) },
+          { role: "user", content: `What was done in this turn:\n${record || "Nothing: no tool was called."}\n\nThe reply:\n${reply}` },
+        ],
+      }),
+    });
+    const got = JSON.parse((await answer.json()).message?.content ?? "{}");
+    const saysDone = got.says_done === true;
+    return { saysDone, backed: !saysDone || got.all_backed === true, wrong: String(got.what_is_wrong ?? "").trim().slice(0, 300) };
+  } catch (error) {
+    console.error(`check (done): ${error.message}`);
+    return { saysDone: false, backed: true, wrong: "" }; // unchecked is let through: the check is a help, not a gate
+  }
+}
+
 // Returns { follows, about, lookup, sum, oracle, change, reminder, keep, look, earlier, files, weather, where, place, inView }, or null if it could not be sorted.
 // `earlier` is the last few messages of the conversation: [{ role, content }].
 export async function sortTurn({ url, model, keepAlive, name }, text, earlier = []) {
