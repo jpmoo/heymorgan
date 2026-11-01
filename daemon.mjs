@@ -2369,6 +2369,16 @@ function unwrapped(value) {
   try { const inner = JSON.parse(t); return typeof inner === "string" ? inner : value; } catch { return value; }
 }
 
+/** The connected services the user's words name: a service's name, or its first word ("Hermes" of "HermesNotes"). */
+function servicesNamed(text) {
+  const said = new Set(String(text).toLowerCase().split(/[^\p{L}\p{N}]+/u));
+  const servers = new Set(mcpTools.map((tool) => tool.function.name.split("__")[0]));
+  return [...servers].filter((server) => {
+    const parts = server.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    return said.has(parts.join("")) || (parts[0]?.length >= 4 && said.has(parts[0]));
+  });
+}
+
 async function mcpTool(name, given) {
   let args = unwrapped(given);
   const [server, tool] = name.split(/__(.*)/s);
@@ -2989,6 +2999,13 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     if (mine !== turn) return;
     acted = false;
     seen = await settleProposal(text) + pickedUp;
+    // A service named by the user is the one to use: told "search Hermes", the model searched Talaris (which also holds
+    // notes) again and again. Any service, by the name it is connected under ("HermesNotes" is named by "Hermes").
+    const services = servicesNamed(text);
+    if (services.length) {
+      seen += ` The user named ${services.join(" and ")}: what they ask of ${services.length > 1 ? "those" : "it"} is done with`
+        + ` ${services.length > 1 ? "their" : "its"} own tools (${services.map((n) => `${n}__…`).join(", ")}), not another service's.`;
+    }
     if (struck) seen += " The user has just said that your last answer was wrong. It has been struck from the record: do not repeat it or rely on it.";
     if (mine !== turn) return;
     // Where the user may be asking for a change, the answer is held back
@@ -3427,6 +3444,17 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         break;
       }
       spoke = false;
+    }
+    // Out of rounds with nothing said — tool calls and corrections can use all eight — the turn ended in silence, with
+    // no reply and no line in the journal. It ends by saying so.
+    if (!said.length && mine === turn) {
+      const line = "I didn't manage to finish that: I kept working at it without getting to an answer. Try asking again,"
+        + " perhaps a step at a time.";
+      history.push({ role: "assistant", content: line });
+      said.push(line);
+      emit({ type: "assistant", text: line });
+      speakDelta(`${line} `);
+      console.error("turn: out of rounds with nothing said");
     }
   } catch (error) {
     if (mine !== turn) return;
