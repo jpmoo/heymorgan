@@ -2909,6 +2909,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     attached += `\n\n[The user attached the file ${file.name}. Its contents:]\n${file.content}\n[End of ${file.name}]`;
   }
   const asked = { role: "user", content: text + attached };
+  dropChecks();
   history.push(asked);
   if (names.length) text = `${text} [attached: ${names.join(", ")}]`;
   let spoke = false;
@@ -3197,10 +3198,16 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         if (lookupTries < 2) {
           lookupTries++;
           const holders = mcpTools.map((tool) => tool.function?.name ?? tool.name).filter((name) => /task|calendar|event|note|search|find/i.test(name ?? ""));
-          seen += " You have just drafted an answer about the user's calendar, tasks or notes without looking anything up, so it"
-            + " cannot be right: what was said earlier in the conversation, or remembered, is not what they hold now."
-            + " Call the tool that holds it now, and answer from what comes back."
-            + (lookupTries > 1 && holders.length ? ` The tools that hold them: ${holders.slice(0, 12).join(", ")}.` : "");
+          // Said to it as a message after its own draft, which it sees: a note among the turn's notes, with the draft
+          // thrown away, was followed by the memory that seemed to answer it, and it answered the same way again
+          // (4 in 8 looked; 8 in 8 with the draft and this after it). Both go when the turn ends (dropChecks).
+          history.push({ role: "assistant", content: String(reply.content ?? ""), check: true }, {
+            role: "user", check: true,
+            content: `[${cfg.name}'s own check, not the user] That answer was drafted without looking anything up, so it cannot be right:`
+              + " anything looked up earlier in this conversation was for another question, and what you remember is not what the user's"
+              + " calendar, tasks or notes hold now. Call the tool that holds what they asked about, and answer from what it returns."
+              + (lookupTries > 1 && holders.length ? ` The tools that hold them: ${holders.slice(0, 12).join(", ")}.` : ""),
+          });
           continue;
         }
         reply.content = "I couldn't look that up just now, so I won't guess. Try asking once more.";
@@ -3323,6 +3330,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     if (mine !== turn) return;
     fail(`${cfg.name}: ${error.message}`);
   }
+  dropChecks();
   lastActivity = Date.now();
   if (fresh || saw.length || acted) lookups.add(asked);
   if (said.length) {
@@ -3353,10 +3361,15 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
 }
 
 // The turn's notes, put after the words of the user's latest message.
+/** A turn's corrections (the draft sent back, and what it was told), out of the conversation once the turn is over. */
+function dropChecks() {
+  for (let i = history.length - 1; i >= 0; i--) if (history[i].check) history.splice(i, 1);
+}
+
 function withNotes(messages) {
-  const last = messages.findLastIndex((message) => message.role === "user");
-  if (last < 0) return messages;
-  const copy = [...messages];
+  const last = messages.findLastIndex((message) => message.role === "user" && !message.check);
+  const copy = messages.map(({ check, ...message }) => message);
+  if (last < 0) return copy;
   copy[last] = { ...copy[last], content: `${copy[last].content}\n\n[Notes from the system for this turn:\n${turnNotes()}\n]` };
   return copy;
 }
