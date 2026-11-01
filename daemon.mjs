@@ -3236,8 +3236,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
             role: "user", check: true,
             content: `[${cfg.name}'s own check, not the user] ${check.wrong || "That reply says something was done that this turn's record does not show."}`
               // Not "do it now": told that, it set about making a note nobody asked for. Only what the user asked for is done.
-              + " Nothing more has been done. If the user asked for it, do it now with the tool for it; if they did not, do not start"
-              + ` it: say plainly what was and was not done${spoke ? ", correcting in a sentence what they have already heard" : ""}.`,
+              + " Nothing more has been done. If the user asked for it, do it now with the tool for it. If they did not, do not start it:"
+              + " answer without saying anything was done (where they only told you something, a short acknowledgement is the answer)"
+              + `${spoke ? ", correcting in a sentence what they have already heard" : ""}.`,
           });
           continue;
         }
@@ -3432,6 +3433,12 @@ async function morgan(mine, onText) {
   if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
   const reply = { role: "assistant", content: "" };
   let buffer = "";
+  // A reply's opening held until its first line is in: Gemma, thinking off, sometimes opens with the marker of its
+  // thinking channel ("thought") as a line of its own, which was shown, and would have been spoken. Taken off here,
+  // before anything sees the reply.
+  let opening = "", opened = false;
+  const pass = (text) => { if (!text) return; reply.content += text; if (mine === turn) onText(text); };
+  const open = () => { opened = true; pass(opening.replace(/^\s*(?:thought|thinking)\s*\n/i, "")); opening = ""; };
   for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
     buffer += chunk;
     let newline;
@@ -3443,12 +3450,13 @@ async function morgan(mine, onText) {
       if (part.error) throw new Error(part.error);
       const message = part.message ?? {};
       if (message.content) {
-        reply.content += message.content;
-        if (mine === turn) onText(message.content);
+        if (opened) pass(message.content);
+        else { opening += message.content; if (opening.includes("\n") || opening.length > 24) open(); }
       }
       if (message.tool_calls?.length) reply.tool_calls = [...(reply.tool_calls ?? []), ...message.tool_calls];
     }
   }
+  if (!opened) open();
   return reply;
 }
 
