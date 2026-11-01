@@ -201,14 +201,15 @@ function lookedUp(earlier) {
 // tools called and what they returned. Asked of every reply, whatever the turn was sorted as: "I've saved that to your
 // routines" (it went to Tech setup) and "I've noted that Lizzie won't be joining" (nothing was saved) came on turns no
 // check looked at, because none was sorted as a change.
-const DONE_SCHEMA = { type: "object", properties: { says_done: { type: "boolean" }, all_backed: { type: "boolean" }, what_is_wrong: { type: "string" } },
-  required: ["says_done", "all_backed", "what_is_wrong"] };
+const DONE_SCHEMA = { type: "object", properties: { says_done: { type: "boolean" }, all_backed: { type: "boolean" }, promises_now: { type: "boolean" },
+  what_is_wrong: { type: "string" } }, required: ["says_done", "all_backed", "promises_now", "what_is_wrong"] };
 const doneInstructions = (name) => [
   `${name}, a voice assistant, has written the reply below. Check it against the record of what was done in this turn. Do not`,
   "rewrite the reply.",
   "",
   `says_done: does the reply say ${name} has already done something: saved, noted, remembered, added, moved, removed, changed,`,
-  "sent, set, booked or scheduled something, or put it somewhere? False for what it offers, plans or is about to do (\"I'll",
+  "sent, set, booked or scheduled something, or put it somewhere; or looked something up, searched, read or checked it, or",
+  "based its answer on it (\"based on your previous notes\")? False for what it offers, plans or is about to do (\"I'll",
   "add that, is that okay?\", \"I'll go ahead and set that up now\", \"I'm going to create…\"), for questions, and for telling",
   "the user what it found or what their things hold.",
   "",
@@ -218,7 +219,12 @@ const doneInstructions = (name) => [
   "now: where things stood already, from earlier in the conversation (\"so it's now only under routines\", of a note saved",
   "there before), is not a claim about this turn, and neither is a summary of what was done.",
   "",
-  "what_is_wrong: when not backed, in a sentence, what the reply says that the record does not show, or shows otherwise.",
+  "promises_now: does the reply end by saying it is doing, or will now do, something without asking the user first (\"I'll",
+  "go ahead and search your notes now\", \"let me look that up\"), when the record does not show it done? False when it asks",
+  "leave (\"is that okay?\"), and false when the record shows it done.",
+  "",
+  "what_is_wrong: when not backed, or promised and not done, in a sentence, what the reply says that the record does not",
+  "show, or shows otherwise.",
   "Empty otherwise.",
 ].join("\n");
 
@@ -239,7 +245,9 @@ export async function checkDone({ url, model, keepAlive, name }, reply, record) 
     });
     const got = JSON.parse((await answer.json()).message?.content ?? "{}");
     const saysDone = got.says_done === true;
-    return { saysDone, backed: !saysDone || got.all_backed === true, wrong: String(got.what_is_wrong ?? "").trim().slice(0, 300) };
+    // Promised for now and not done is not backed either: the turn ended on "I'll go ahead and search now", and nothing was.
+    return { saysDone, backed: (!saysDone || got.all_backed === true) && got.promises_now !== true, promised: got.promises_now === true,
+      wrong: String(got.what_is_wrong ?? "").trim().slice(0, 300) };
   } catch (error) {
     console.error(`check (done): ${error.message}`);
     return { saysDone: false, backed: true, wrong: "" }; // unchecked is let through: the check is a help, not a gate

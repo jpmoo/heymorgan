@@ -2185,6 +2185,9 @@ async function reconnectMcp() {
 // plain yes. The model's word that the user agreed is never what decides.
 const toolLog = []; // the last few tool calls and the start of what came back
 const changes = new Set(); // names of the tools that change things
+/** Tools that read nothing of the user's records: called alone, a question about their calendar, tasks or notes is unanswered. */
+const NOT_A_LOOKUP = new Set(["search_conversations", "weather", "location", "calculate", "consult_oracle", "remember", "rewrite_topic",
+  "remember_picture", "forget_picture"]);
 let proposals = []; // [{ name, args }], all put forward in the same turn
 let agreedTo = ""; // a question the user has just said yes to, asked in words with no proposal behind it
 let acted = false; // something was put forward or carried out in this turn
@@ -2336,7 +2339,22 @@ function pare(name, args) {
   return left;
 }
 
-async function mcpTool(name, args) {
+/**
+ * A tool's arguments as the model meant them: a string it sent JSON-encoded — in quotes, its line breaks written as
+ * \\n — read back to the text inside. A page's words went to Talaris that way, and the page was one long quoted line.
+ * Any tool, any argument, at any depth: only a string that is itself a whole JSON string is unwrapped.
+ */
+function unwrapped(value) {
+  if (Array.isArray(value)) return value.map(unwrapped);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, unwrapped(v)]));
+  if (typeof value !== "string") return value;
+  const t = value.trim();
+  if (t.length < 2 || t[0] !== '"' || t.at(-1) !== '"') return value;
+  try { const inner = JSON.parse(t); return typeof inner === "string" ? inner : value; } catch { return value; }
+}
+
+async function mcpTool(name, given) {
+  let args = unwrapped(given);
   const [server, tool] = name.split(/__(.*)/s);
   const client = mcpClients.get(server);
   if (!client || !mcpTools.some((entry) => entry.function.name === name)) return `Unknown tool: ${name}`;
@@ -2974,6 +2992,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
     let lookupTries = 0; // times sent back for answering a lookup without looking
+    // Looked in what holds the user's things (NOT_A_LOOKUP says what does not). Searching earlier conversations is not:
+    // "search Hermes for packing lists" was answered from a search of old talk, and passed.
+    let searched = false;
     let doneTries = 0; // times sent back for saying something was done that was not, or not so
     let called = false;
     try { picked = await pickNotes(text); } catch (error) { picked = ""; console.error(error.message); }
@@ -3192,13 +3213,17 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
       }
       if (mine !== turn) return;
       called ||= Boolean(reply.tool_calls?.length);
+      // A call that reads what holds the user's things — their services, Morgan's memory, their files — and changes
+      // nothing. Earlier conversations, the weather, where they are, a sum or the Oracle hold none of it; and making the
+      // page asked for is not having looked.
+      searched ||= (reply.tool_calls ?? []).some((call) => !NOT_A_LOOKUP.has(call.function.name) && !changes.has(call.function.name));
       if (sums && !worked && !reply.tool_calls?.length && !corrected) {
         corrected = true;
         seen += " You have just drafted an answer to a sum without working it out. Call calculate with the sum written out, and"
           + " give the user the number it returns.";
         continue;
       }
-      if (lookup && !called) {
+      if (lookup && !searched) {
         // Twice, the second time with the tools named: once was not enough ("what tasks do I have today?", after
         // tomorrow's were looked up, was answered from tomorrow's and from memory). After that, no answer made up.
         if (lookupTries < 2) {
@@ -3210,7 +3235,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           history.push({ role: "assistant", content: String(reply.content ?? ""), check: true }, {
             role: "user", check: true,
             content: `[${cfg.name}'s own check, not the user] That answer was drafted without looking anything up, so it cannot be right:`
-              + " anything looked up earlier in this conversation was for another question, and what you remember is not what the user's"
+              + " anything looked up earlier in this conversation was for another question, and neither what you remember nor what was"
+              + " said in earlier conversations is what the user's"
               + " calendar, tasks or notes hold now. Call the tool that holds what they asked about, and answer from what it returns."
               + (lookupTries > 1 && holders.length ? ` The tools that hold them: ${holders.slice(0, 12).join(", ")}.` : ""),
           });
