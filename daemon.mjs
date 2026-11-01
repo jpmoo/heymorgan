@@ -3235,8 +3235,9 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           history.push({ role: "assistant", content: String(reply.content), check: true }, {
             role: "user", check: true,
             content: `[${cfg.name}'s own check, not the user] ${check.wrong || "That reply says something was done that this turn's record does not show."}`
-              + " Nothing more has been done. Do it now with the tool for it, if it is what the user wants; otherwise tell them plainly what"
-              + ` was and was not done${spoke ? ", correcting in a sentence what they have already heard" : ""}.`,
+              // Not "do it now": told that, it set about making a note nobody asked for. Only what the user asked for is done.
+              + " Nothing more has been done. If the user asked for it, do it now with the tool for it; if they did not, do not start"
+              + ` it: say plainly what was and was not done${spoke ? ", correcting in a sentence what they have already heard" : ""}.`,
           });
           continue;
         }
