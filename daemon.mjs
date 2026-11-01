@@ -2262,6 +2262,11 @@ async function sumIntent(text) {
 // proposal is not left to word it: having called the tool, it tends to say
 // the thing is done. This is a separate request that can only ask.
 async function proposalQuestion() {
+  // What this turn has done already — its lookups and reads — so the question asks only about what waits: given the
+  // user's request alone, it asked leave to "search your Hermes notes and check the weather" after both were done.
+  const from = history.findLastIndex((message) => message.role === "user" && !message.check);
+  const done = (from < 0 ? [] : history.slice(from + 1)).flatMap((message) => (message.tool_calls ?? []).map((call) => call.function.name))
+    .filter((name) => !proposals.some((p) => p.name === name)).map((name) => name.replace(/^.*__/, "").replace(/_/g, " "));
   const each = proposals.map(({ name, args }) => `${name.split("__")[1].replace(/_/g, " ")}${Object.keys(args ?? {}).length ? ` with ${Object.entries(args).map(([key, value]) => `${key} ${JSON.stringify(value)}`).join(", ")}` : ""}`);
   const plain = `I'm about to ${each.join(", and ")}. Shall I go ahead?`;
   try {
@@ -2278,12 +2283,14 @@ async function proposalQuestion() {
           role: "system",
           content: `You word one question for ${cfg.name}, a voice assistant. The user asked for something that changes their data. `
             + "It has NOT been done. Write a single short spoken sentence that says exactly what is about to be done, every action "
-            + "listed, in plain words and using the names of things from the conversation, and asks whether to go ahead. It must be "
-            + "a question. Nothing else. "
+            + "waiting for a yes, in plain words and using the names of things from the conversation, and asks whether to go ahead. "
+            + "Only what is waiting: what this turn has already done is done, and is never asked about or spoken of as still to come. "
+            + "It must be a question. Nothing else. "
             + cfg.style,
         }, {
           role: "user",
           content: `The conversation so far:\n${history.filter((message) => message.role !== "tool" && message.content).slice(-6).map((message) => `${message.role === "user" ? "User" : cfg.name}: ${message.content}`).join("\n")}`
+            + (done.length ? `\n\nAlready done this turn (not to be asked about): ${[...new Set(done)].join(", ")}` : "")
             + `\n\nWaiting for a yes: ${proposals.map(({ name, args }) => `${name} with ${JSON.stringify(args)}`).join("; ")}`,
         }],
       }),
