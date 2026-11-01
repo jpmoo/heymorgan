@@ -2445,7 +2445,9 @@ async function locationTool() {
 async function whereNow() {
   const got = await whereSaid();
   const found = got?.said.match(/About (-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
-  return found ? { lat: Number(found[1]), lon: Number(found[2]) } : null;
+  // The town, where the device names it: the forecast says it, so the model has no town of its own to make up.
+  const near = got?.said.match(/, in or near ([^(]+?) \(/);
+  return found ? { lat: Number(found[1]), lon: Number(found[2]), ...(near ? { name: near[1].trim() } : {}) } : null;
 }
 
 
@@ -2965,6 +2967,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     let worked = false;
     let credited = false; // the Oracle has been named as the source of what it supplied
     let corrected = false;
+    let lookupTries = 0; // times sent back for answering a lookup without looking
     let called = false;
     try { picked = await pickNotes(text); } catch (error) { picked = ""; console.error(error.message); }
     if (mine !== turn) return;
@@ -3188,11 +3191,19 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           + " give the user the number it returns.";
         continue;
       }
-      if (lookup && !called && !corrected) {
-        corrected = true;
-        seen += " You have just drafted an answer about the user's calendar, tasks or notes without looking anything up, so it"
-          + " cannot be right. Call the tool that holds it now, and answer from what comes back.";
-        continue;
+      if (lookup && !called) {
+        // Twice, the second time with the tools named: once was not enough ("what tasks do I have today?", after
+        // tomorrow's were looked up, was answered from tomorrow's and from memory). After that, no answer made up.
+        if (lookupTries < 2) {
+          lookupTries++;
+          const holders = mcpTools.map((tool) => tool.function?.name ?? tool.name).filter((name) => /task|calendar|event|note|search|find/i.test(name ?? ""));
+          seen += " You have just drafted an answer about the user's calendar, tasks or notes without looking anything up, so it"
+            + " cannot be right: what was said earlier in the conversation, or remembered, is not what they hold now."
+            + " Call the tool that holds it now, and answer from what comes back."
+            + (lookupTries > 1 && holders.length ? ` The tools that hold them: ${holders.slice(0, 12).join(", ")}.` : "");
+          continue;
+        }
+        reply.content = "I couldn't look that up just now, so I won't guess. Try asking once more.";
       }
       if (process.env.HEYMORGAN_DEBUG) console.error("round", JSON.stringify({ guarded, acted, nudges, calls: (reply.tool_calls ?? []).map((call) => call.function.name), said: String(reply.content ?? "").slice(0, 120) }));
       // Curly apostrophes as straight ones: "I’ve updated" went past a check that knew only "I've".
