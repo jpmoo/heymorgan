@@ -7,24 +7,64 @@ its own subscription login — and relays the answer.
 
 ## Brain and devices
 
-Morgan is a **brain** — memory, the model, the Oracle, reminders, the voices it
-knows, and speech — and one or more **devices**: the microphone, the wake word,
-the speaker, and whatever screen, folders or tools a device offers. A device
-reaches its brain at an address, with a key. On a laptop with its own brain
-the brain is a second service and the address is `localhost:8790`; with the
-brain on a home server, it is that server's address. Nothing else differs:
-the same settings, the same faces, the same voice.
+Morgan has two parts:
 
-- `heymorgan serve`: keep the brain on this machine (heymorgan-brain), with this
-  machine as its first device. A fresh install does this by itself the first
-  time its service starts.
-- `heymorgan connect <address> <key> [name]`: use a brain elsewhere.
-- `heymorgan devices` (`add`, `remove`): the devices a brain lets in, a key each.
+- **The brain** holds memory, runs the model loop and the Oracle, keeps
+  reminders and the voices it knows, and does speech.
+- **Devices** are the microphone, wake word and speaker, plus whatever screen,
+  folders or tools a device offers.
 
-The brain does every device's speech, so a device needs no speech models of its
-own; or a speech service on another machine does it for the brain
-(`speech.mjs serve`, [deploy.md](docs/deploy.md)). When two devices hear "Hey
-Morgan", the one that heard it best answers. See [protocol.md](docs/protocol.md) §5.
+A device reaches its brain at an address, using a key. Every brain is a server,
+even one serving a single laptop. The only difference between setups is the
+address, so you get the same settings, the same faces and the same voice
+everywhere.
+
+There are three more pieces, and each can run on the same machine as the brain
+or on another one:
+
+- **Ollama** answers. Point the brain at it with the `ollama.url` setting.
+- **The speech service** handles speech for the brain (`node speech.mjs serve`).
+  It is optional: without it, the brain does speech itself.
+- **The Oracle** is the `claude` command, run where the brain runs, with its own
+  login.
+
+## Ways to set it up
+
+Pick a row, then follow its steps under [Installing](#installing).
+
+| Setup | The brain | Speech | Devices | Steps |
+|---|---|---|---|---|
+| **A. All on one laptop** | this laptop (`heymorgan-brain`) | this laptop | this laptop | [Common](#common-to-every-machine), then [A](#a-everything-on-one-laptop) |
+| **A + a speech machine** | this laptop | another machine with a GPU | this laptop | A, then [Speech elsewhere](#speech-on-another-machine) |
+| **A + more devices** | this laptop, listening on the network | this laptop | this laptop, a Pi, another computer | A, then [More devices](#letting-more-devices-in) |
+| **B. A home server** | the home server (`heymorgan.service` from its checkout) | the server, or a speech machine | laptops, Pis | [B](#b-the-brain-on-a-home-server) and [deploy.md](docs/deploy.md), then a device on each machine |
+| **C. A device only** | somewhere else | done by the brain | this machine | [Common](#common-to-every-machine), then [C](#c-a-device-of-a-brain-elsewhere) |
+| **D. A voice-only speaker** | somewhere else | done by the brain | a Pi in a speaker | [pi.md](docs/pi.md) |
+
+A few things are true whichever setup you pick:
+
+- **Moving between A and C is one command.** `heymorgan connect` on a laptop
+  stops its own brain and uses the other one. `heymorgan serve` (or `heymorgan
+  disconnect`) brings the laptop's brain back, along with the memories it had
+  before. Memory does not travel when you switch. To move it, follow
+  [deploy.md §3](docs/deploy.md#3-what-morgan-knows-moved-from-the-laptop).
+- **Each device can do its own speech** instead of the brain:
+  `heymorgan device speech here`. The default, `auto`, uses the brain's speech
+  when the brain offers it and the device's own otherwise. With `here`, that
+  device needs the speech models listed under
+  [What it needs](#what-it-needs-beyond-this-repository).
+- **Talaris and Noctalia are optional.** They are faces: a pleasant settings
+  window and a place to chat. Everything they set can also be set with
+  `heymorgan settings`, `heymorgan device …` and `heymorgan admin …`, and you
+  can talk to Morgan with `heymorgan chat`, `heymorgan window` or a wake word.
+- **When two devices hear "Hey Morgan"**, the one that heard it best answers
+  ([protocol.md](docs/protocol.md) §5). Voiceprints live on the brain. The first
+  device to learn a voice teaches it to every device, and any device can learn
+  it again for itself (`heymorgan enroll <name> --here`).
+- **`heymorgan status` says which setup is running.** On a device, `"role"` is
+  `client` and `"speech"` is `brain` or `here`. `heymorgan brain status` asks
+  the brain on this machine, if there is one. If you see `"role":"local"`,
+  that is a test run, not a setup.
 
 ## What is where
 
@@ -53,39 +93,138 @@ Morgan", the one that heard it best answers. See [protocol.md](docs/protocol.md)
 
 ## What it needs, beyond this repository
 
-Wherever speech is done (the brain, or a device doing its own), under
-`~/.local/share/heymorgan/`, none of it committed here:
+None of this is committed here. Models go under `~/.local/share/heymorgan/`,
+in the account that uses them.
 
-- `whisper.cpp/` built from source, and `models/ggml-base.en.bin` (speech to text)
-- `piper/` and `voices/*.onnx` (the lighter voice)
-- `kokoro-multi-lang-v1_0/` (the more natural voice)
-- `speaker/nemo_en_titanet_small.onnx` (telling voices apart)
+| What | Brain | Speech (the brain, a speech service, or a device set to `here`) | Device |
+|---|:-:|:-:|:-:|
+| Node 22, and `npm ci` in a checkout | ✓ | ✓ | ✓ |
+| An Ollama server with a tool-calling chat model and an embedding model, on any machine | ✓ | | |
+| The `claude` command (for the Oracle) | ✓ | | |
+| python3 with GObject bindings for libsecret (the login keyring) | ✓ (a laptop brain; a server keeps its key in `data/memory.key`) | | |
+| `whisper.cpp/`, built from source, and `models/ggml-base.en.bin` (speech to text) | | ✓ | |
+| `kokoro-multi-lang-v1_0/` (the more natural voice), or `piper/` and `voices/*.onnx` (the lighter one) | | ✓ | |
+| `speaker/nemo_en_titanet_small.onnx` (telling voices apart) | | ✓ | |
+| `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/` (the wake word) | | | ✓ |
+| `pw-record`, `pw-play` and `pw-cli` (or ALSA commands set with `heymorgan device record` / `play`), and `ffmpeg` | | | ✓ |
+| `grim` and `wl-paste` (looking at the screen and clipboard, on request) | | | a desktop |
 
-On every device: `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/` (wake word).
-
-Also: Node 22, `npm install` here, an Ollama server with a tool-calling chat
-model and an embedding model, the `claude` command, `pw-record`, `pw-play`,
-`pw-cli`, `ffmpeg`, `grim`, `wl-paste`, and python3 with GObject bindings for
-libsecret.
+If the brain does speech and a device leaves `speech` at `auto`, that device
+needs only the wake-word model.
 
 ## Installing
 
+### Common to every machine
+
 ```bash
-npm install
+git clone https://github.com/jpmoo/heymorgan.git ~/Documents/Scripts/heymorgan
+```
+
+```bash
+cd ~/Documents/Scripts/heymorgan && npm ci
+```
+
+```bash
 ln -s "$PWD/bin/heymorgan" ~/.local/bin/heymorgan
-ln -s "$PWD/noctalia" ~/.local/share/noctalia/plugins/morgan
-cp systemd/heymorgan.service ~/.config/systemd/user/
-systemctl --user enable --now heymorgan.service
-ln -s "$PWD/window/morgan.svg" ~/.local/share/icons/hicolor/scalable/apps/io.github.jpmoo.heymorgan.svg
-cp window/io.github.jpmoo.heymorgan.desktop ~/.local/share/applications/
-noctalia msg plugins enable jpmoo/morgan
-heymorgan settings
 ```
 
 The unit file and the desktop file assume the repository is at
-`~/Documents/Scripts/heymorgan`. The first time the service starts, it sets
-itself up as brain and device (as `heymorgan serve`); `heymorgan connect`
-points it at a brain elsewhere instead.
+`~/Documents/Scripts/heymorgan`. If you put it elsewhere, edit them.
+
+### A. Everything on one laptop
+
+Install the device's service:
+
+```bash
+cp systemd/heymorgan.service ~/.config/systemd/user/
+```
+
+```bash
+systemctl --user enable --now heymorgan.service
+```
+
+The first time it starts with no brain to go to, it runs `heymorgan serve`
+itself. That installs `heymorgan-brain.service`, which listens on
+`localhost:8790`, gives this machine a key, and connects to it. Then use
+`heymorgan settings` (or Talaris) to set Ollama, log the Oracle in
+(`heymorgan login`), and teach it your voice (`heymorgan enroll <your name>`).
+
+For the faces, which are optional, set up the Noctalia plugin and the window:
+
+```bash
+ln -s "$PWD/noctalia" ~/.local/share/noctalia/plugins/morgan && noctalia msg plugins enable jpmoo/morgan
+```
+
+```bash
+ln -s "$PWD/window/morgan.svg" ~/.local/share/icons/hicolor/scalable/apps/io.github.jpmoo.heymorgan.svg && cp window/io.github.jpmoo.heymorgan.desktop ~/.local/share/applications/
+```
+
+Talaris finds Morgan on its own, through `heymorgan.sock`.
+
+### Speech on another machine
+
+To move the brain's speech to a machine with a GPU, such as the one running
+Ollama, put a checkout there along with the speech models, set `SPEECH_KEY` in
+its `.env`, and run `systemd/heymorgan-speech.service`. Then tell the brain
+where it is: `speechUrl` and `speechKey`.
+[deploy.md §8](docs/deploy.md#8-speech-on-the-brain) has the steps. These two
+settings can only be changed on the brain's own machine. For a laptop brain:
+
+```bash
+heymorgan brain admin '{"op":"config.set","args":{"values":{"speechUrl":"http://ai-server:8791","speechKey":"…"}}}'
+```
+
+### Letting more devices in
+
+A laptop brain lets in only devices on its own machine until you tell it to
+listen on the network:
+
+```bash
+heymorgan brain admin '{"op":"config.set","args":{"values":{"listen":"network"}}}'
+```
+
+Then give each new device a key. Run this, then run the `heymorgan connect`
+line it prints on that device:
+
+```bash
+heymorgan devices add kitchen
+```
+
+A key crosses the network unencrypted, so keep this to your home network or
+Tailscale. Remember that the laptop has to be awake for the other devices to
+reach Morgan. A brain that should always be there belongs on a server (B).
+
+### B. The brain on a home server
+
+The brain runs as a system service from its own checkout, with a `.env` (copy
+`.env.example`) that sets the port and the address it listens on. Everything it
+keeps goes into the checkout's `data/` folder. [deploy.md](docs/deploy.md)
+covers the whole thing: the Oracle's login, moving a laptop's memory across, the
+unit, TLS for reaching it from away, keys, speech, and `./restart.sh` for
+updates. On the server, run `./bin/heymorgan` from the checkout.
+
+### C. A device of a brain elsewhere
+
+Install the service as in A, but get a key from the brain first
+(`heymorgan devices add <name>` there, or Talaris → Morgan → Where → Devices),
+then:
+
+```bash
+heymorgan connect home-server:8790 hc_… laptop
+```
+
+It uses the brain's speech, settings, memory and voices. The settings this
+device keeps for itself, such as a voice or sound commands, are set with
+`heymorgan device <setting> <value>`. If the brain can't be reached, it plays
+a short sound and says why.
+
+### D. A Raspberry Pi in a speaker
+
+See [pi.md](docs/pi.md). It covers the hardware, the wake word on a Zero 2 W,
+the lights and button (`pi/lights.py`), and teaching it your voice, either by
+voice or from another device.
+
+### Coming from heyclaude
 
 Until 2026-10-23 all of this was called heyclaude. The old names still work for
 now, as `docs/rename.md` describes: `heyclaude` is a link to the command,
@@ -123,8 +262,8 @@ network, and it is not built to be a service on the open internet.
   when asked, and only on the device asked; a picture is kept only when you say
   to keep it.
 - **Devices.** When Morgan runs on a server, each device has its own key,
-  issued by the server (`heymorgan access add <device>`, shown once, stored only
-  as a hash) and revocable (`heymorgan access remove <device>`). A key gives full
+  issued by the brain (`heymorgan devices add <device>`, shown once, stored only
+  as a hash) and revocable (`heymorgan devices remove <device>`). A key gives full
   use of Morgan: its memory, its history and its settings, so keep keys like
   passwords. Settings that are commands Morgan runs (the voice, recording and
   playback commands, the camera, the Oracle's program and tools, tool servers
