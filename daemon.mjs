@@ -2192,6 +2192,8 @@ let proposals = []; // [{ name, args }], all put forward in the same turn
 let agreedTo = ""; // what the user said yes to this turn: the question asked, and what was carried out on it
 /** Changes a yes never covers beyond what it named: what takes something away is asked about each time. */
 const TAKES_AWAY = /(delete|remove|archive|trash|clear|cancel|unlink|disconnect)/i;
+/** A call's result that says it did not happen: the tool's own refusal (mcp.mjs), or the call failing. */
+const CALL_FAILED = /^(The tool reported an error|It failed)/;
 let acted = false; // something was put forward or carried out in this turn
 
 const CHANGE_CLAIMED = /\b(i've|i have|i just|i went ahead|has been|have been|is now|are now|it's been|all set|all done|taken care of|successfully)\b[^.?!]*\b(added|created|made|deleted|removed|archived|unarchived|updated|changed|edited|renamed|moved|marked|completed|sent|replied|forwarded|scheduled|rescheduled|cancelled|canceled|set|tagged|assigned|drafted|posted|saved|done)\b|\ball set\b|\bsuccessfully\b/i;
@@ -2225,11 +2227,13 @@ async function settleProposal(text) {
       + "If they still want it, or want it changed, call the tools again to propose it afresh.";
   }
   for (const { name, args } of waiting) {
-    emit({ type: "confirm", name, done: true });
     const [server, tool] = name.split(/__(.*)/s);
     let result;
     try { result = (await mcpClients.get(server).call(tool, args)).slice(0, 4000); } catch (error) { result = `It failed: ${error.message}`; }
-    did(name, args, `Carried out just now, on the user's yes. ${result}`);
+    toolLog.push({ t: Date.now(), name, args, result: result.slice(0, 400) });
+    // Said once it is known: a card reading Done over a call the tool refused was how a failure looked like a success.
+    emit({ type: "confirm", name, done: !CALL_FAILED.test(result) });
+    did(name, args, CALL_FAILED.test(result) ? `Tried on the user's yes, and it did not work. ${result}` : `Carried out just now, on the user's yes. ${result}`);
   }
   acted = true;
   // The yes stands for the rest of this turn's work on what it named and what it made: filling in the page it just
@@ -2237,7 +2241,8 @@ async function settleProposal(text) {
   const asked = history.filter((message) => message.role === "assistant" && message.content).at(-1)?.content ?? "";
   agreedTo = [asked, ...waiting.map(({ args }) => JSON.stringify(args)),
     ...history.slice(-2 * waiting.length).filter((m) => m.role === "tool").map((m) => String(m.content ?? ""))].join(" ");
-  return "What the user agreed to has just been carried out, as the results above show. Do not call those tools again for it. If"
+  return "What the user agreed to has just been tried, and the results above say how each went. Do not call again what worked. If one"
+    + " did not work, fix what was wrong and call it again now: it goes ahead on the same yes. If"
     + " what they asked for is not finished (the page made still needs its words), finish it now: what finishes it goes ahead on"
     + " the same yes. Then tell them briefly how it went.";
 }
@@ -2403,12 +2408,12 @@ async function mcpTool(name, given) {
     const covered = (value) => bits(value).every((w) => agreedWords.has(w));
     if (agreedTo && names.length && !TAKES_AWAY.test(name) && names.every(covered)) {
       acted = true;
-      emit({ type: "confirm", name, args });
-      emit({ type: "confirm", name, done: true });
       let result;
       try { result = (await client.call(tool, args)).slice(0, 4000); } catch (error) { result = `It failed: ${error.message}`; }
       toolLog.push({ t: Date.now(), name, args, result: result.slice(0, 400) });
-      return `Carried out just now, on the user's yes. ${result}${omitted}`;
+      // Nothing is waiting for a yes it already has: only how it went.
+      emit({ type: "confirm", name, done: !CALL_FAILED.test(result) });
+      return CALL_FAILED.test(result) ? `Tried on the user's yes, and it did not work. ${result}${omitted}` : `Carried out just now, on the user's yes. ${result}${omitted}`;
     }
     proposals.push({ name, args });
     acted = true;
