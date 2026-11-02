@@ -96,10 +96,10 @@ if (ROLE === "client" && existsSync(MIRROR)) process.env.HEYMORGAN_CONFIG ??= MI
 // keeps its key (which seals only the voices taught to it) in a file only its
 // account can read.
 export const HEADLESS = process.env.HEYMORGAN_HEADLESS === "1";
-if (HEADLESS && !HOUSED) process.env.HEYMORGAN_KEY_FILE ??= join(CONFIG_HOME, "device.key");
 
 // A brain kept in its checkout (the home server's), or one in someone's session (a laptop's own).
 export const HOUSED = ROLE === "server" && (fromDotenv.has("PORT") || Boolean(process.env.HEYMORGAN_DATA));
+if (HEADLESS && !HOUSED) process.env.HEYMORGAN_KEY_FILE ??= join(CONFIG_HOME, "device.key");
 const RUNTIME = process.env.XDG_RUNTIME_DIR ?? "/tmp";
 // The brain's command socket where it shares a machine with a device, whose is heymorgan.sock.
 export const BRAIN_SOCKET = join(RUNTIME, "heymorgan-brain.sock");
