@@ -5,6 +5,20 @@
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.13** (2026-11-05): `days` and `conversation` take a zone (`days 2026-11 America/Phoenix`), and answer
+  by that clock rather than the brain's, as does `delete day` with `--zone=`.
+  `delete` — history deleted for good, unlike `rate`'s
+  hiding, with a `--preview` of what it holds and the notes that may have come
+  from it; a `deleted` event; `deleted` in `threads`, the ids of threads gone, for
+  a copy kept elsewhere to let go of, and `unfiled`, the conversations not yet cut
+  into threads (the one in hand among them), each with an id that `conversation`
+  opens and no summary; once cut, its first exchange is in the thread it became.
+  `incognito` — everything is read and nothing
+  is written (no record, notes, documents, pictures, worded reminders or changes
+  through tools, and no Oracle), until turned off, across restarts; an `incognito`
+  event, `incognito` in `status`, and `unkept` on what `recent` gives while it is
+  on. Saying "go incognito" or "leave incognito" does the same. `memoryHeld` in
+  `status` still means a demo's hold only.
 - **1.12** (2026-10-31): `home` and `weatherUnits` in `config.get` and
   `config.set`. Morgan answers the weather itself, from Open-Meteo, for a place
   named, or where the asking device says it is (Talaris's `where`), or `home` (a
@@ -247,6 +261,8 @@ conversation that was nothing else); `recent` and `threads` do not.
 | Command | Does | Reply |
 |---|---|---|
 | `rate <t> up\|down\|none` | Thumbs up marks an answer as one to prefer; thumbs down hides it from Morgan for good (it stays on the record, but is taken out of the conversation in hand, out of search, and out of any thread, which is made again without it). Anything but `up` or `down` clears both. Emits `rated`, and after `down` also `review`. | `{ ok }`, or `{ ok: false, error: "there is no such exchange" }` |
+| `delete conversation <id> \| exchange <t> \| day <YYYY-MM-DD> \| all [--notes] [--preview]` | History deleted for good (1.13): the exchanges, their embeddings, the threads that held them (a thread that also held others is made again without them). A conversation takes with it any answers hidden within it. Notes that may have come from it stay unless `--notes` is given. All that is left is the ids of deleted threads. | `{ ok, exchanges, threads, notes }`; with `--preview`, nothing is deleted: `{ ok, exchanges, notes: [{ topic, note }] }` |
+| `incognito [on\|off]` | Read everything, keep nothing (1.13). Either way the conversation in hand ends. With no argument, says how it stands. | `{ ok, incognito }` |
 | `settle <json>` | The user's verdict on a note in memory that may have come from a hidden answer: `{ "t": …, "topic": "…", "note": "…", "action": "delete" \| "keep" }`. Anything but `delete` keeps it. Emits `review` for that `t` with what is left. | `{ ok }` |
 
 ### Voices heard

@@ -4,12 +4,17 @@
 // each so that earlier conversations can be found by meaning as well as by
 // word and by date. Every line is sealed: see seal() in lib.mjs.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "./lib.mjs";
 
 const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(unseal(line))) : []);
 const words = (text) => new Set(text.toLowerCase().match(/[a-z0-9']{4,}/g) ?? []);
+// Written whole beside the file and moved over it, so that a crash leaves one or the other.
+const rewrite = (file, list) => {
+  writeFileSync(`${file}.new`, list.map((entry) => seal(JSON.stringify(entry))).join("\n") + (list.length ? "\n" : ""), { mode: 0o600 });
+  renameSync(`${file}.new`, file);
+};
 
 export class Transcript {
   constructor({ dir, url, model }) {
@@ -29,6 +34,8 @@ export class Transcript {
     // Threads: the exchanges of a conversation that were about one thing,
     // with a title and a summary. A conversation that wanders is several.
     this.threads = lines(join(dir, "threads.sealed")); // { id, t0, t1, title, summary, ts, live? }
+    // The ids of threads deleted: all that is left of them, so that a copy kept elsewhere can let them go too.
+    this.deleted = lines(join(dir, "deleted.sealed"));
     const threadVectors = new Map(lines(join(dir, "thread-vectors.sealed"))
       .filter((entry) => (entry.m ?? "nomic-embed-text") === model)
       .map((entry) => [entry.id, entry.v]));
@@ -61,6 +68,43 @@ export class Transcript {
     return { item, stale: stale.map((thread) => this.items.filter((entry) => thread.ts.includes(entry.t) && !entry.hidden)) };
   }
 
+  // Gone for good, unlike rate's hiding: the exchanges, their embeddings, and
+  // every thread that held one, off every file. A thread that also held others
+  // is returned as those others, for the caller to make afresh, since its
+  // summary was written with these in view.
+  forget(times) {
+    const gone = new Set(times);
+    const touched = this.threads.filter((thread) => thread.ts.some((t) => gone.has(t)));
+    const ids = new Set(touched.map((thread) => thread.id));
+    const count = this.items.filter((item) => gone.has(item.t)).length;
+    this.items = this.items.filter((item) => !gone.has(item.t));
+    this.threads = this.threads.filter((thread) => !ids.has(thread.id));
+    for (const thread of this.threads) {
+      if (thread.follows?.some((id) => ids.has(id))) thread.follows = thread.follows.filter((id) => !ids.has(id));
+    }
+    const plain = (list) => list.map(({ v, ...rest }) => rest);
+    rewrite(join(this.dir, "exchanges.sealed"), plain(this.items));
+    rewrite(join(this.dir, "vectors.sealed"), lines(join(this.dir, "vectors.sealed")).filter((entry) => !gone.has(entry.t)));
+    rewrite(join(this.dir, "threads.sealed"), plain(this.threads));
+    rewrite(join(this.dir, "thread-vectors.sealed"), lines(join(this.dir, "thread-vectors.sealed")).filter((entry) => !ids.has(entry.id)));
+    if (ids.size) {
+      this.deleted.push(...ids);
+      rewrite(join(this.dir, "deleted.sealed"), this.deleted);
+    }
+    return {
+      exchanges: count,
+      threads: ids.size,
+      stale: touched.map((thread) => this.items.filter((item) => thread.ts.includes(item.t) && !item.hidden)).filter((rest) => rest.length),
+    };
+  }
+
+  // Ids gone that were never threads: conversations not yet cut into any, which a copy kept elsewhere also lists.
+  markDeleted(ids) {
+    if (!ids.length) return;
+    this.deleted.push(...ids);
+    rewrite(join(this.dir, "deleted.sealed"), this.deleted);
+  }
+
   // Exchanges that no thread has been made from yet.
   unthreaded() {
     const done = new Set(this.threads.flatMap((thread) => thread.ts));
@@ -68,6 +112,9 @@ export class Transcript {
   }
 
   async addThread({ title, summary, items }) {
+    // Being cut into threads when they were deleted: nothing of them is written back.
+    items = items.filter((item) => this.items.includes(item));
+    if (!items.length) return null;
     const thread = {
       id: `${items[0].t}-${this.threads.length}`,
       t0: items[0].t,
@@ -90,7 +137,9 @@ export class Transcript {
 
   async indexThread(thread) {
     const said = this.items.filter((item) => thread.ts.includes(item.t)).map((item) => item.user).join(" ").slice(0, 1500);
-    thread.v = await this.embed(`search_document: ${thread.title}. ${thread.summary}\n${said}`);
+    const vector = await this.embed(`search_document: ${thread.title}. ${thread.summary}\n${said}`);
+    if (!this.threads.includes(thread)) return;
+    thread.v = vector;
     const stored = Buffer.from(thread.v.buffer).toString("base64");
     appendFileSync(join(this.dir, "thread-vectors.sealed"), seal(JSON.stringify({ id: thread.id, v: stored, m: this.model })) + "\n", { mode: 0o600 });
   }
@@ -196,7 +245,9 @@ export class Transcript {
   }
 
   async index(item) {
-    item.v = await this.embed(`search_document: ${item.user}\n${item.morgan}`);
+    const vector = await this.embed(`search_document: ${item.user}\n${item.morgan}`);
+    if (!this.items.includes(item)) return; // deleted while it was being embedded
+    item.v = vector;
     const stored = Buffer.from(item.v.buffer).toString("base64");
     // An embedding gives away much of what it was made from, so it is sealed too.
     appendFileSync(join(this.dir, "vectors.sealed"), seal(JSON.stringify({ t: item.t, v: stored, m: this.model })) + "\n", { mode: 0o600 });

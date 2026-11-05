@@ -54,6 +54,8 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heymorgan device [<setting> <value> | <setting> --clear]   this device's own settings, over the brain's (a Pi's voice, its sound commands)",
     "heymorgan enroll <name> [--here | --everywhere] [--device <device>]   teach a voice (on that device, which says the lines)",
     "heymorgan forget-voice <name> [--everywhere]   forget a voice taught on this device (or the one every device shares)",
+    "heymorgan delete conversation <id> | exchange <t> | day <YYYY-MM-DD> | all [--notes] [--preview]   delete history for good; --notes takes the notes that came from it too",
+    "heymorgan incognito [on | off]   read everything, keep nothing, until it is turned off",
     "heymorgan mute [on|off]         this device's microphone, as a speaker's button does",
     "heymorgan brain <command>       the same commands, put to the brain on this machine rather than its device",
     "heymorgan admin <json>          what the settings window uses: { op, args }",

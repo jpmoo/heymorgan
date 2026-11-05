@@ -302,6 +302,10 @@ network, and it is not built to be a service on the open internet.
 
 Report a security problem privately to the owner rather than in a public issue.
 
+**Deleting history.** Morgan's conversation window can delete an exchange, a conversation, a day or all of it (`heymorgan delete`). It is for good: the words, their embeddings and the threads made from them go, and only the id of a deleted thread is kept, so that a copy elsewhere can let it go too. It says first which notes in memory may have come from what is going, and you choose whether they go with it. The Oracle keeps its own record of what it was asked (`~/.config/heymorgan/claude` on the brain), which this does not reach.
+
+**Incognito.** The eye button in the window, `heymorgan incognito on`, or saying "go incognito". Morgan reads as usual (memory, earlier conversations, your services) and writes nothing, even when told to: no record of what is said, no notes, documents, pictures or reminders with words in them, no tool that does not declare itself read-only, and no Oracle, since it is sent the conversation and keeps its own record. Going in, the conversation in hand is filed and ended. It stays on until turned off, across restarts, and when it ends what was said is gone. It applies to the brain, so to every device of it. What reaches the model on the AI server is still sent there, and its own logs are its own.
+
 ## Credits
 
 Morgan stands on other people's work. Bundled in this repository:

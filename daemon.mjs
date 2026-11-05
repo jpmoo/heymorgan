@@ -353,7 +353,8 @@ const morganPrompt = () => [
   "own words and just as briefly. Speak to the user as you, never about them by name. Never announce what you are about",
   "to do (let me ask, let me check, I need to clarify): do it, and say only the answer.",
   "You keep a long-term memory about the user, in notes organized into topics that you create and curate yourself.",
-  memoryHeld()
+  incognito ? INCOGNITO_PROMPT : "",
+  heldForDemo()
     ? "Right now your memory is held, because a demonstration is on: nothing said is remembered and you do not save notes, documents or pictures. Answer from what you know; if asked to remember something, say you can't while the demo is on."
     : "",
   memoryInFull()
@@ -727,7 +728,7 @@ async function recognise(bytes, known) {
 
 // Keep a picture under a label: the one just looked at if there is one, or a new one.
 async function rememberPicture(args) {
-  if (memoryHeld()) return HELD;
+  if (memoryHeld()) return held();
   const label = String(args.label ?? "").trim();
   const source = String(args.source ?? "camera");
   if (!slug(label)) return "No label given.";
@@ -1022,6 +1023,8 @@ async function reminderIntent(text, likely) {
   }
   const what = String(intent.text ?? "").replace(/\s+/g, " ").trim();
   const asked = intent.kind === "relative" ? { kind: "relative", amount: intent.amount, unit: intent.unit } : { kind: "absolute", day: intent.day, time: intent.time };
+  // A reminder is what was said, on disk. A plain timer says nothing.
+  if (incognito && what) return did("set_reminder", { ...asked, text: what }, INCOGNITO_NOTE);
   try {
     const at = reminders.resolve(asked);
     due.push({ id: randomUUID().slice(0, 8), at, text: what, made: Date.now() });
@@ -1139,7 +1142,7 @@ async function keepIntent(text, files, likely, given = []) {
     lastRead = { path, text: content, t: Date.now() };
     // An attached file is already in front of the model; one found in a folder is not.
     if (!files.length && !given.length) did("read_file", { path }, content);
-    if (intent.keep && memoryHeld()) did("keep_document", { title, file: path }, HELD);
+    if (intent.keep && memoryHeld()) did("keep_document", { title, file: path }, held());
     else if (intent.keep) {
       keepDocument(title, path, content);
       did("keep_document", { title, file: path }, `Done, just now: the full text of ${basename(path)} is kept under the title "${title}".`);
@@ -1168,7 +1171,11 @@ async function keepIntent(text, files, likely, given = []) {
 // done here: what the user wants remembered is written as notes and filed, and
 // any held note it corrects, or that the user says not to keep, is taken out.
 async function rememberFacts(text) {
-  if (memoryHeld()) return;
+  if (memoryHeld()) {
+    // Said in so many words, or it may answer that it has.
+    if (incognito) did("remember", { asked: text }, held());
+    return;
+  }
   // The held notes nearest to what was said: those a correction may be about.
   let near = [];
   try {
@@ -1604,8 +1611,27 @@ async function describePicture(base64, question) {
 // saying so does not leave Morgan forgetful; the client asking for it says so
 // again while it lasts. Not kept across a restart, for the same reason.
 let memoryHeldUntil = 0;
-const memoryHeld = () => Date.now() < memoryHeldUntil;
+const heldForDemo = () => Date.now() < memoryHeldUntil;
 const HELD = "Nothing was kept: Morgan's memory is held right now (a demonstration is on), so nothing new is remembered.";
+
+// Incognito (protocol 1.13, `incognito`): everything is still read — memory,
+// earlier conversations, the user's services — and nothing is written, whoever
+// or whatever asks. The conversation is held in memory only and goes when it
+// ends; no notes, documents, pictures or reminders; no tool that changes
+// anything, since "remember this" would otherwise find its way into a note in
+// a service; and no Oracle, which is sent the conversation and keeps its own
+// record of it. Unlike a demo's hold it has no limit and survives a restart:
+// Morgan forgetting because it was left on costs little, and saving what the
+// user took to be private cannot be taken back. So it is off only when told.
+let incognito = false;
+let offRecord = []; // the exchanges of an incognito conversation, for whatever opens to show it; never written down
+const INCOGNITO_NOTE = "Nothing was done: Morgan is incognito, so nothing is saved or changed, even when asked. Tell the user so; turning incognito off is what would let you.";
+const INCOGNITO_PROMPT = "You are incognito right now. Nothing in this conversation is kept: it is gone when it ends. You can read everything as usual"
+  + " (your memory, earlier conversations, the user's services) but you cannot save a note, document, picture or reminder or change anything in any"
+  + " service, even when told to, and the Oracle is not asked. If asked to remember, save or change something, say plainly that you can't while"
+  + " incognito, and do not offer to do it another way.";
+const memoryHeld = () => incognito || heldForDemo();
+const held = () => (incognito ? INCOGNITO_NOTE : HELD);
 
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
 const topicPath = (name) => join(MEMORY, `${slug(name)}.topic`);
@@ -1823,7 +1849,10 @@ function madeByMorgan(name) {
 
 async function memoryTool(name, args, sources = null) {
   const topic = String(args.topic ?? "").trim();
-  if (memoryHeld() && (name === "remember" || name === "rewrite_topic")) return HELD;
+  // `sources` is a conversation being filed, which was on the record, even if incognito began since.
+  if ((sources ? heldForDemo() : memoryHeld()) && (name === "remember" || name === "rewrite_topic")) return held();
+  // A conversation deleted while it was being filed: nothing is learned from it after all.
+  if (sources?.length && !sources.some((t) => transcript.items.some((item) => item.t === t))) return "Not saved: that conversation has been deleted.";
   if (name === "end_interview") {
     interviewing = false;
     emit({ type: "interview", active: false });
@@ -2389,6 +2418,8 @@ async function mcpTool(name, given) {
   const [server, tool] = name.split(/__(.*)/s);
   const client = mcpClients.get(server);
   if (!client || !mcpTools.some((entry) => entry.function.name === name)) return `Unknown tool: ${name}`;
+  // Only what says it only reads: whatever else a tool may do, it is not done now.
+  if (incognito && (changes.has(name) || !readOnly(mcpAll.get(server)?.tools?.find((entry) => entry.name === tool) ?? {}))) return INCOGNITO_NOTE;
   if (changes.has(name)) {
     const left = pare(name, args);
     const omitted = left.length ? ` (Left out, because the user did not ask for them: ${left.join(", ")}. Do not add what was not asked for.)` : "";
@@ -2456,6 +2487,8 @@ const transcript = new Transcript({
 });
 
 let history = []; // user, assistant and tool messages, without the system prompt
+const INCOGNITO_FILE = join(transcript.dir, "incognito"); // that it is on, and nothing else
+if (BRAIN) incognito = existsSync(INCOGNITO_FILE);
 // ---------------------------------------------------------------- the weather
 //
 // Where it is for: the place the user named; else where the device that was
@@ -2541,6 +2574,7 @@ async function weatherTool(args, said = "") {
 // conversation so far, and Morgan's replies would carry what it read.
 let privateTurns = false;
 const PRIVATE_TOOLS = /__(work_patterns|work_log|where)$/;
+const INCOGNITO_ORACLE = "The Oracle was not asked: Morgan is incognito, and the Oracle keeps a record of what it is sent. Answer from what you know and say that it may be out of date.";
 const PRIVATE_REFUSAL = "Not asked. This conversation holds the user's activity record or whereabouts, from their device, which stay with you and never go to the Oracle. Tell the user, in a sentence, that the Oracle cannot be consulted in this conversation and that a new conversation can; then answer from what you have, if you can.";
 let began = 0; // when the conversation in progress started
 let unfiled = 0; // exchanges since memory was last brought up to date
@@ -2560,7 +2594,7 @@ if (BRAIN) transcript.reindex();
 if (BRAIN) setTimeout(() => backfillThreads().then(backfillLinks).catch((error) => console.error(`threads: ${error.message}`)), 30_000).unref();
 
 // A conversation interrupted by a restart carries on where it left off.
-for (const item of BRAIN ? transcript.since(Date.now() - cfg.idleResetMinutes * 60_000) : []) {
+for (const item of BRAIN && !incognito ? transcript.since(Date.now() - cfg.idleResetMinutes * 60_000) : []) {
   if (item.hidden) continue;
   const restored = { role: "user", content: item.user };
   exchangeOf.set(restored, item.t);
@@ -2596,12 +2630,21 @@ function endedAt(t) {
 }
 
 // An exchange as the conversation views are given it.
-function shown({ t, asked, user, morgan, oracle, hidden, good, steps: taken }) {
-  return { t, asked: asked ?? t, when: stamp(t), askedWhen: stamp(asked ?? t), user, morgan, ...(oracle ? { oracle } : {}), ...(taken ? { steps: taken } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) };
+function shown({ t, asked, user, morgan, oracle, hidden, good, steps: taken, unkept }) {
+  return { t, asked: asked ?? t, ...(unkept ? { unkept } : {}), when: stamp(t), askedWhen: stamp(asked ?? t), user, morgan, ...(oracle ? { oracle } : {}), ...(taken ? { steps: taken } : {}), hidden: Boolean(hidden), good: Boolean(good), ...(hidden ? { review: notesFrom(t) } : {}) };
 }
 
-const clockOf = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-const isoDay = (t) => { const day = new Date(t); return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`; };
+// The calendars are read on a device, which may be somewhere the brain's setting is not: 11:30 PM in
+// Phoenix was listed under the next day, by New York's clock. So a view says its zone, and is answered by it.
+const zoneGiven = (zone) => { try { return new Intl.DateTimeFormat("en-US", { timeZone: zone }).resolvedOptions().timeZone; } catch { return undefined; } };
+const clockOf = (t, timeZone) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
+const dayOf = (t, timeZone) => new Date(t).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", ...(timeZone ? { timeZone } : {}) });
+const isoDay = (t, timeZone) => {
+  if (timeZone) {
+    const part = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(t)).map(({ type, value }) => [type, value]));
+    return `${part.year}-${part.month}-${part.day}`;
+  }
+  const day = new Date(t); return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`; };
 
 // Every earlier conversation, as a calendar shows it: the threads talk was
 // cut into, each with its title, and talk not yet cut into threads, taken a
@@ -2658,6 +2701,85 @@ async function searchTool(args) {
     + " and these as well where they bear on what was asked.)";
 }
 
+// An exchange out of the conversation in hand.
+function outOfTalk(t) {
+  const at = history.findIndex((message) => exchangeOf.get(message) === t);
+  if (at < 0) return false;
+  let end = at + 1;
+  while (end < history.length && history[end].role !== "user") end++;
+  history.splice(at, end - at);
+  return true;
+}
+
+// What `delete` names, as the times of its exchanges. A conversation takes with
+// it the answers hidden while it went on, which no view shows and search skips.
+function exchangesNamed(kind, what, zone) {
+  if (kind === "all") return transcript.items.map((item) => item.t);
+  if (kind === "exchange") return transcript.items.filter((item) => item.t === Number(what)).map((item) => item.t);
+  if (kind === "day") return transcript.items.filter((item) => isoDay(item.t, zone) === what).map((item) => item.t);
+  if (kind !== "conversation") return null;
+  const found = conversations().find((entry) => entry.id === what);
+  if (!found) return [];
+  const own = transcript.threads.find((thread) => thread.id === what)?.ts ?? found.items.map((item) => item.t);
+  const hidden = transcript.items.filter((item) => item.hidden && item.t >= found.t0 && item.t <= found.t1).map((item) => item.t);
+  return [...new Set([...own, ...hidden])];
+}
+
+// Exchanges deleted, for good: off the record, out of the conversation in hand,
+// and off the notes' account of where they came from. The notes themselves stay
+// unless the user said to take them too (`withNotes`); they were asked first.
+function deleteExchanges(times, withNotes) {
+  const notes = [...new Map(times.flatMap(notesFrom).map((entry) => [noteKey(entry.topic, entry.note), entry])).values()];
+  if (withNotes) for (const { topic, note } of notes) settleNote(0, topic, note, "delete");
+  const gone = new Set(times);
+  // A turn in flight would write its answer into what was just cleared.
+  if (history.some((message) => gone.has(exchangeOf.get(message)))) { stopActive(); interrupt(); }
+  const loose = conversations().filter((entry) => entry.id.startsWith("u") && entry.items.some((item) => gone.has(item.t))).map((entry) => entry.id);
+  const outcome = transcript.forget(times);
+  const still = new Set(conversations().map((entry) => entry.id));
+  transcript.markDeleted(loose.filter((id) => !still.has(id)));
+  for (const t of times) { outOfTalk(t); delete provenance.kept[t]; }
+  for (const [key, from] of Object.entries(provenance.notes)) {
+    const left = from.filter((t) => !gone.has(t));
+    if (left.length) provenance.notes[key] = left; else delete provenance.notes[key];
+  }
+  writeSealed(SOURCES, JSON.stringify(provenance));
+  if (gone.has(lastFiled)) lastFiled = 0;
+  if (continuing && !transcript.threads.some((thread) => thread.id === continuing.id)) continuing = null;
+  recalled = [];
+  remembered = [];
+  if (!history.some((message) => message.role === "user")) {
+    history = [];
+    unfiled = 0;
+    began = 0;
+    lastActivity = 0;
+  }
+  for (const rest of outcome.stale) fileThreads(rest);
+  emit({ type: "deleted", ts: times });
+  console.log(`history: ${outcome.exchanges} exchanges and ${outcome.threads} threads deleted${withNotes ? `, with ${notes.length} notes` : ""}`);
+  return { exchanges: outcome.exchanges, threads: outcome.threads, notes: withNotes ? notes.length : 0 };
+}
+
+// Incognito on or off. Either way the conversation in hand ends: going in, it is
+// filed as any other; coming out, it was never written and now it is not held.
+function setIncognito(on) {
+  stopActive();
+  interrupt();
+  reset();
+  lastFiled = 0;
+  lastLook = null;
+  incognito = on;
+  if (on) writeFileSync(INCOGNITO_FILE, "", { mode: 0o600 }); else rmSync(INCOGNITO_FILE, { force: true });
+  console.log(`incognito: ${on ? "on" : "off"}`);
+  emit({ type: "new" });
+  emit({ type: "incognito", on });
+}
+
+// Said aloud or typed, and nothing else: not left to the model, which could not
+// be taken at its word, and which on a speaker is the only way in.
+const INCOGNITO_ON = /^(please )?((go|get|switch|turn|change|move|enter|start|put me)( me)?( to| into| in| on)? )?incognito( mode)?( on)?( please)?$/;
+const INCOGNITO_OFF = /^(please )?((leave|exit|end|stop|quit|cancel|turn off|switch off)( me)?( being)?( the)? incognito( mode)?|incognito( mode)? off|(come|get|go) out of incognito( mode)?)( please)?$/;
+
 // Thumbs down: the exchange stays on the record and is kept from the model
 // for good. It comes out of the conversation in hand, so that a wrong answer
 // is not built on; it is no longer found by search; and any thread it was
@@ -2667,12 +2789,7 @@ function rate(t, vote) {
   const outcome = transcript.rate(t, vote);
   if (!outcome) return false;
   if (vote === "down") {
-    const at = history.findIndex((message) => exchangeOf.get(message) === t);
-    if (at >= 0) {
-      let end = at + 1;
-      while (end < history.length && history[end].role !== "user") end++;
-      history.splice(at, end - at);
-    }
+    outOfTalk(t);
     for (const rest of outcome.stale) if (rest.length) fileThreads(rest);
   }
   emit({ type: "rated", t, vote });
@@ -2740,7 +2857,8 @@ async function fileThreads(items, carries = null) {
   const made = [];
   for (const thread of threads) {
     const members = thread.exchanges.map((number) => items[number - 1]).sort((a, b) => a.t - b.t);
-    if (members.length) made.push(await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members }));
+    const added = members.length ? await transcript.addThread({ title: String(thread.title).trim(), summary: String(thread.summary).trim(), items: members }) : null;
+    if (added) made.push(added);
   }
   await mergeAlike(made);
   for (const thread of transcript.threads.filter((thread) => made.includes(thread))) await linkThread(thread);
@@ -2896,6 +3014,19 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   interrupt();
   quiet = typed;
   if (typed) spokenTurn = false;
+  const going = !files.length && !given.length ? (INCOGNITO_ON.test(words(text).join(" ")) ? true : INCOGNITO_OFF.test(words(text).join(" ")) ? false : null) : null;
+  if (going !== null) {
+    const line = going === incognito ? `Incognito is already ${going ? "on" : "off"}.`
+      : going ? "Incognito. Nothing said from here is kept, and I can't save or change anything. I can still look things up."
+        : "Incognito is off. What we said there is gone, and what you say now is kept.";
+    if (going !== incognito) setIncognito(going);
+    quiet = typed;
+    emit({ type: "assistant", text: line });
+    setState("thinking");
+    speakDelta(`${line} `);
+    speakFlush();
+    return finishSpeaking();
+  }
   if (!text && (files.length || given.length)) text = files.length + given.length > 1 ? "Here are some files." : "Here is a file.";
   // "That was wrong": the last answer is struck before anything else happens.
   let struck = false;
@@ -2918,6 +3049,7 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   if (!text) return setState("idle");
   if (lastActivity && Date.now() - lastActivity > cfg.idleResetMinutes * 60_000) reset();
   const mine = ++turn;
+  const unkept = incognito;
   lastActivity = Date.now();
   began ||= lastActivity;
   // Attached files are read here and handed over with the message. The
@@ -3089,8 +3221,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
     // Other facts about the world go to it too, unless the router is switched off.
     const kind = current || sorted.oracle ? "current"
       : cfg.router && sorted.about === "world" && !lookup && !sums && !guarded && !files.length ? "world" : null;
-    if ((kind === "current" || kind === "world") && privateTurns) {
-      did("consult_oracle", { question: text }, PRIVATE_REFUSAL);
+    if ((kind === "current" || kind === "world") && (privateTurns || incognito)) {
+      did("consult_oracle", { question: text }, incognito ? INCOGNITO_ORACLE : PRIVATE_REFUSAL);
     } else if (kind === "current" || kind === "world") {
       setState("consulting");
       let answer = "";
@@ -3414,8 +3546,8 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
           result = await memoryTool(call.function.name, call.function.arguments ?? {});
           // Its own memory changed is a change made: a reply saying so is true, not one to be sent back.
           if (["remember", "rewrite_topic"].includes(call.function.name) && /^(Saved|Rewrote|Deleted)/.test(result)) acted = true;
-        } else if (privateTurns) {
-          result = PRIVATE_REFUSAL;
+        } else if (privateTurns || incognito) {
+          result = incognito ? INCOGNITO_ORACLE : PRIVATE_REFUSAL;
         } else if (sorted && !sorted.oracle && !["world", "current"].includes(sorted.about) && !told.length) {
           // The sorter's word on what a turn needs governs the Oracle, whoever asks for it: a turn about the user's own
           // things (their weather, read from Morgan's own tool) went to the Oracle anyway, for a town the device never said.
@@ -3468,7 +3600,12 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
   dropChecks();
   lastActivity = Date.now();
   if (fresh || saw.length || acted) lookups.add(asked);
-  if (said.length) {
+  if (said.length && (unkept || incognito)) {
+    const at = Date.now();
+    offRecord.push({ t: at, asked: askedAt || at, user: text, morgan: said.join(" "), unkept: true, ...(steps.length ? { steps } : {}), ...(told.length ? { oracle: told.join(" ") } : {}) });
+    console.error(`turn: incognito; tools: ${used.length ? used.join(", ") : "none"}`);
+    steps = [];
+  } else if (said.length) {
     unfiled++;
     const filed = Date.now();
     exchangeOf.set(asked, filed);
@@ -3559,6 +3696,8 @@ async function morgan(mine, onText) {
 }
 
 function reset() {
+  offRecord = [];
+  if (incognito) lastLook = null;
   if (unfiled && !interviewing) fileAway(history, began ? transcript.since(began).filter((item) => !item.hidden).map((item) => item.t) : []);
   if (began) fileThreads(transcript.since(began).filter((item) => !item.hidden && !transcript.threads.some((thread) => thread.ts.includes(item.t))), continuing?.id);
   continuing = null;
@@ -3750,6 +3889,7 @@ function stopOracle() {
 // question wants looking up, and the caller then asks the full one.
 function consultOracle(question, quick = false) {
   // The last guard: whatever asked, a conversation that has read the activity record is not sent.
+  if (incognito) return Promise.resolve(INCOGNITO_ORACLE);
   if (privateTurns) return Promise.resolve("The Oracle was not asked: this conversation holds the user's activity record, which stays with Morgan.");
   // The Oracle gets the conversation so far: the question alone often leans
   // on something said earlier.
@@ -4501,7 +4641,26 @@ function handle(line, socket) {
       emit({ type: "new" });
       setState("idle");
       return reply({ ok: true, state });
+    case "incognito": {
+      // incognito [on | off]: says how it stands, without either.
+      if (rest[0] && rest[0] !== "on" && rest[0] !== "off") return reply({ ok: false, error: "incognito on, off, or nothing to ask" });
+      if (rest[0] && (rest[0] === "on") !== incognito) setIncognito(rest[0] === "on");
+      return reply({ ok: true, incognito });
+    }
+    case "delete": {
+      // delete conversation <id> | exchange <t> | day <YYYY-MM-DD> [--zone=<IANA name>] | all [--notes] [--preview]
+      const options = rest.filter((word) => word.startsWith("--"));
+      const [kind, what] = rest.filter((word) => !word.startsWith("--"));
+      const times = exchangesNamed(kind, what, zoneGiven(options.find((word) => word.startsWith("--zone="))?.slice(7)));
+      if (!times) return reply({ ok: false, error: "delete conversation <id>, exchange <t>, day <YYYY-MM-DD> or all" });
+      if (options.includes("--preview")) {
+        return reply({ ok: true, exchanges: times.length, notes: [...new Map(times.flatMap(notesFrom).map((entry) => [noteKey(entry.topic, entry.note), entry])).values()] });
+      }
+      if (!times.length) return reply({ ok: false, error: "there is nothing there to delete" });
+      return reply({ ok: true, ...deleteExchanges(times, options.includes("--notes")) });
+    }
     case "interview":
+      if (incognito) return reply({ ok: false, error: "not while incognito: an interview is for remembering" });
       stopActive();
       interrupt();
       reset();
@@ -4511,26 +4670,28 @@ function handle(line, socket) {
       return reply({ ok: true, state });
     case "recent": {
       const count = Math.min(Number(rest[0]) || 50, 500);
-      return reply({ ok: true, items: transcript.items.slice(-count).map(shown) });
+      // Incognito, only what was said since: anything opening now shows what is in hand.
+      return reply({ ok: true, items: (incognito ? offRecord : transcript.items).slice(-count).map(shown) });
     }
     case "days": {
-      // days YYYY-MM: the conversations of each day in that month, for a calendar.
+      // days YYYY-MM [zone]: the conversations of each day in that month, for a calendar, by that zone's clock.
+      const zone = zoneGiven(rest[1]);
       const [year, month] = String(rest[0] ?? isoDay(Date.now()).slice(0, 7)).split("-").map(Number);
       if (!year || !month) return reply({ ok: false, error: "days wants a month: YYYY-MM" });
       const from = new Date(year, month - 1, 1).getTime();
-      const to = new Date(year, month, 1).getTime();
+      const key = `${year}-${String(month).padStart(2, "0")}`;
       const days = {};
       for (const entry of conversations()) {
-        if (entry.t0 < from || entry.t0 >= to) continue;
-        const day = isoDay(entry.t0);
-        (days[day] ??= []).push({ id: entry.id, t0: entry.t0, t1: entry.t1, title: entry.title, exchanges: entry.items.length, clock: clockOf(entry.t0) });
+        const day = isoDay(entry.t0, zone);
+        if (!day.startsWith(key)) continue;
+        (days[day] ??= []).push({ id: entry.id, t0: entry.t0, t1: entry.t1, title: entry.title, exchanges: entry.items.length, clock: clockOf(entry.t0, zone) });
       }
       for (const list of Object.values(days)) list.sort((a, b) => a.t0 - b.t0);
       // And the month laid out, for a view that cannot easily work dates out: its name, the
       // weekday of the 1st (0 is Sunday), how many days it has, and today (YYYY-MM-DD).
       return reply({
-        ok: true, days, key: `${year}-${String(month).padStart(2, "0")}`, name: new Date(from).toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        first: new Date(from).getDay(), length: new Date(year, month, 0).getDate(), today: isoDay(Date.now()),
+        ok: true, days, key, name: new Date(from).toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        first: new Date(from).getDay(), length: new Date(year, month, 0).getDate(), today: isoDay(Date.now(), zone),
       });
     }
     case "continue": {
@@ -4570,11 +4731,12 @@ function handle(line, socket) {
       return;
     }
     case "conversation": {
-      // conversation <id>: its exchanges, as recent gives them.
+      // conversation <id> [zone]: its exchanges, as recent gives them.
+      const zone = zoneGiven(rest[1]);
       const found = conversations().find((entry) => entry.id === rest[0]);
       if (!found) return reply({ ok: false, error: "no such conversation" });
       // And the conversations it may carry on from, and those that may carry it on.
-      const brief = (thread) => ({ id: thread.id, t0: thread.t0, title: thread.title, when: `${new Date(thread.t0).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}, ${clockOf(thread.t0)}` });
+      const brief = (thread) => ({ id: thread.id, t0: thread.t0, title: thread.title, when: `${dayOf(thread.t0, zone)}, ${clockOf(thread.t0, zone)}` });
       const own = transcript.threads.find((thread) => thread.id === found.id);
       const earlier = (own?.follows ?? []).map((id) => transcript.threads.find((thread) => thread.id === id)).filter(Boolean).map(brief);
       const later = transcript.threads.filter((thread) => thread.follows?.includes(found.id)).sort((a, b) => a.t0 - b.t0).map(brief);
@@ -4646,14 +4808,16 @@ function handle(line, socket) {
     case "threads":
       // Each with its id (for `conversation`) and its exchanges' times: a thread merged into another keeps its exchanges, so
       // a client holding an old id finds where it went by the thread now holding the old one's first exchange.
-      return reply({ ok: true, threads: transcript.threads.map(({ id, t0, t1, title, summary, ts, live }) => ({ id, t0, t1, title, summary, exchanges: ts.length, ts, live: Boolean(live) })) });
+      // And `deleted` (1.13): threads gone for good, for a copy kept elsewhere to let go of.
+      // And `unfiled` (1.13): conversations not yet cut into threads, the one in hand among them, named by their first words.
+      return reply({ ok: true, deleted: transcript.deleted, unfiled: conversations().filter((entry) => entry.id.startsWith("u")).map(({ id, t0, t1, title, items }) => ({ id, t0, t1, title, summary: "", exchanges: items.length, ts: items.map((item) => item.t) })), threads: transcript.threads.map(({ id, t0, t1, title, summary, ts, live }) => ({ id, t0, t1, title, summary, exchanges: ts.length, ts, live: Boolean(live) })) });
     case "reminders":
       // `now` is this machine's clock: `at` and `made` are on it, and a client's own clock may not agree (protocol 1.10).
       return reply({ ok: true, now: Date.now(), reminders: [...due].sort((a, b) => a.at - b.at).map((entry) => ({ ...entry, when: reminders.when(entry.at) })) });
     case "status":
       return reply({
         ok: true, state, name: cfg.name, model: cfg.ollama.model, oracle: cfg.oracle.model,
-        ...speechStatus(), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", muted, interviewing, memoryHeld: memoryHeld(), mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
+        ...speechStatus(), wakeWord: cfg.wakeWord, wakeEngine: spot ? "spotter" : "transcribe", muted, interviewing, incognito, memoryHeld: heldForDemo(), mcpTools: mcpTools.map((tool) => tool.function.name), topics: topics().map((topic) => topic.name),
       });
     case "watch":
       watchers.add(socket);
@@ -4733,7 +4897,7 @@ const admin = createAdmin({
     return { chat, chatSees, vision, chosen: Boolean(cfg.visionModel), visionSees: vision === chat ? chatSees : visionSees };
   },
   hold: {
-    get: () => ({ held: memoryHeld(), until: memoryHeld() ? new Date(memoryHeldUntil).toISOString() : null }),
+    get: () => ({ held: heldForDemo(), until: heldForDemo() ? new Date(memoryHeldUntil).toISOString() : null }),
     set(on, hours) {
       memoryHeldUntil = on ? Date.now() + Math.min(24, Math.max(0.1, Number(hours) || 12)) * 3600_000 : 0;
       console.log(`memory: ${on ? `held until ${new Date(memoryHeldUntil).toISOString()}` : "kept again"}`);

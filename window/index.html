@@ -38,6 +38,17 @@ Copyright (c) 2026 Jeff Moore
   /* Earlier conversations, a month at a time: a dot for each conversation on a day. */
   #calendar { position: fixed; top: 54px; right: 14px; width: 300px; z-index: 5; padding: 10px 12px 12px; border-radius: 12px;
               background: var(--panel); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 10px 30px #0008; }
+  #unkept { padding: 5px 14px; font-size: 12px; text-align: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  #unkept[hidden], #deleting[hidden] { display: none; }
+  #incognito.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 25%, transparent); }
+  #deleting { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 32px)); max-height: 70%; overflow: auto; z-index: 9; padding: 14px;
+              border-radius: 10px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(0,0,0,.35); font-size: 13px; }
+  #deleting p { margin: 0 0 8px; } #deleting ul { margin: 0 0 10px; padding-left: 18px; font-size: 12px; max-height: 180px; overflow: auto; }
+  #deleting .acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .history-foot { margin-top: 8px; text-align: right; }
+  .dayrow { display: flex; align-items: center; gap: 4px; } .dayrow .menu-item, .dayrow > button:first-child { flex: 1; min-width: 0; }
+  .dayrow-drop { flex: none; opacity: .65; padding: 2px 4px; background: none; border: 0; color: inherit; cursor: pointer; } .dayrow-drop:hover { opacity: 1; color: var(--danger, #e2a39c); }
+  #deleting button, .history-foot button { border: 1px solid var(--line); padding: 2px 10px; } button.drop { color: #e2a39c; }
   #calendar[hidden], #daylist[hidden] { display: none; }
   #calendar .month { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
   #calendar .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
@@ -142,10 +153,12 @@ Copyright (c) 2026 Jeff Moore
   <div id="meter"></div>
   <span class="state" id="state"></span>
   <span class="spacer"></span>
+  <button id="incognito"><i class="ti" data-icon="eye-off"></i></button>
   <button id="history" title="Earlier conversations, by day"><i class="ti" data-icon="calendar"></i></button>
   <button id="settings" title="Settings: memory, voice, listening, files, connections"><i class="ti" data-icon="settings"></i></button>
   <button id="new" title="Start a new conversation"><i class="ti" data-icon="plus"></i></button>
 </header>
+<div id="unkept" hidden>Incognito: Morgan reads as usual, and nothing here is kept</div>
 <main id="scroll"><div class="column" id="log"></div></main>
 <div id="calendar" hidden>
   <div class="month"><button id="prev" title="The month before"><i class="ti" data-icon="chevron-left"></i></button>
@@ -153,7 +166,9 @@ Copyright (c) 2026 Jeff Moore
   <div class="grid" id="weekdays"></div>
   <div class="grid" id="days"></div>
   <div id="daylist" hidden></div>
+  <div class="history-foot"><button id="deleteall" class="drop">Delete all history</button></div>
 </div>
+<div id="deleting" hidden></div>
 <footer><div class="column" style="gap:0">
   <div id="nav" hidden>
     <div class="side" id="before"></div>
@@ -210,6 +225,50 @@ function add(node) {
 }
 function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
 
+// Deleting history: for good, so said first, with what it would leave behind.
+function askDelete(what, label) {
+  bridge.call(`delete ${what} --preview`, (answer) => {
+    let found;
+    try { found = JSON.parse(answer); } catch { return; }
+    if (!found.ok || !found.exchanges) return;
+    const card = $("deleting");
+    const sum = found.exchanges === 1 ? "1 exchange" : `${found.exchanges} exchanges`;
+    card.replaceChildren(el("p", "", `Delete ${label} (${sum})? This can't be undone.`));
+    const notes = found.notes ?? [];
+    if (notes.length) {
+      card.append(el("p", "", notes.length === 1 ? "This note in memory may have come from it:" : `These ${notes.length} notes in memory may have come from it:`));
+      const list = el("ul");
+      for (const entry of notes.slice(0, 30)) list.append(el("li", "", entry.note));
+      if (notes.length > 30) list.append(el("li", "", `and ${notes.length - 30} more`));
+      card.append(list);
+    }
+    const acts = el("div", "acts");
+    const go = (flags) => () => { card.hidden = true; bridge.call(`delete ${what}${flags}`); };
+    const cancel = el("button", "", "Cancel");
+    cancel.onclick = () => { card.hidden = true; };
+    acts.append(cancel);
+    if (notes.length) {
+      const both = el("button", "drop", "Delete, and those notes");
+      both.onclick = go(" --notes");
+      acts.append(both);
+    }
+    const only = el("button", "drop", notes.length ? "Delete, keep the notes" : "Delete");
+    only.onclick = go("");
+    acts.append(only);
+    card.append(acts);
+    card.hidden = false;
+  });
+}
+
+function showIncognito(on) {
+  $("incognito").classList.toggle("on", on);
+  $("incognito").title = on ? "Incognito is on: nothing is kept. Click to turn it off" : "Go incognito: read everything, keep nothing";
+  $("unkept").hidden = !on;
+}
+
+// This screen's clock: what the calendar is read by, whatever the brain's is set to.
+const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const isoOf = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 // An answer can be marked once it is on the record (it has a time, `t`).
 // Thumbs down keeps it there but out of Morgan's sight for good; thumbs up
 // marks one to prefer. Pressing the lit one clears it.
@@ -225,6 +284,11 @@ function marks(box, t) {
   down.onclick = () => bridge.call(`rate ${t} ${box.classList.contains("hidden") ? "none" : "down"}`);
   head.insertBefore(down, head.querySelector(".copy"));
   head.insertBefore(up, down);
+  const drop = el("button", "mark drop");
+  drop.append(icon("trash"));
+  drop.title = "Delete this exchange for good";
+  drop.onclick = () => askDelete(`exchange ${t}`, "this exchange");
+  head.insertBefore(drop, up);
 }
 
 // Notes that may have come from a hidden answer: each to be kept or deleted, by the user.
@@ -269,7 +333,7 @@ function message(who, text, oracle, record, at) {
   if (who === "you") body.textContent = text; else body.innerHTML = md.render(text);
   box.append(head, body);
   // Only once the heading is in the box: the marks are put into it there.
-  if (record) { marks(box, record.t); box.classList.toggle("hidden", Boolean(record.hidden)); box.classList.toggle("good", Boolean(record.good)); review(box, record.t, record.review); }
+  if (record && !record.unkept) { marks(box, record.t); box.classList.toggle("hidden", Boolean(record.hidden)); box.classList.toggle("good", Boolean(record.good)); review(box, record.t, record.review); }
   if (oracle) {
     const fold = el("details", "oracle");
     const summary = el("summary");
@@ -375,6 +439,13 @@ function hear(line) {
       break;
     }
     case "new": viewing = null; $("nav").hidden = true; $("log").replaceChildren(); writing = null; heldOracle = ""; break;
+    case "incognito": showIncognito(Boolean(e.on)); break;
+    case "deleted": {
+      const gone = new Set(e.ts);
+      if (!$("calendar").hidden) month();
+      if ([...document.querySelectorAll("#log .msg[data-t]")].some((box) => gone.has(Number(box.dataset.t)))) recent();
+      break;
+    }
   }
 }
 
@@ -545,7 +616,7 @@ function month() {
   $("monthname").textContent = shownMonth.toLocaleDateString([], { month: "long", year: "numeric" });
   $("daylist").hidden = true;
   const key = `${year}-${String(index + 1).padStart(2, "0")}`;
-  bridge.call(`days ${key}`, (answer) => {
+  bridge.call(`days ${key} ${ZONE}`, (answer) => {
     try { monthDays = JSON.parse(answer).days ?? {}; } catch { monthDays = {}; }
     const grid = $("days");
     grid.replaceChildren();
@@ -568,7 +639,6 @@ function month() {
         cell.title = held.length === 1 ? held[0].title : `${held.length} conversations`;
         cell.onclick = () => {
           for (const other of grid.querySelectorAll(".picked")) other.classList.remove("picked");
-          if (held.length === 1) return load(held[0]);
           cell.classList.add("picked");
           pick(date, held);
         };
@@ -587,8 +657,18 @@ function pick(date, held) {
     row.append(el("small", "", clock(entry.t0)), el("span", "", entry.title));
     row.title = `${entry.exchanges} exchange${entry.exchanges === 1 ? "" : "s"}`;
     row.onclick = () => load(entry);
-    list.append(row);
+    const drop = el("button", "dayrow-drop");
+    drop.append(icon("trash"));
+    drop.title = "Delete this conversation";
+    drop.onclick = () => askDelete(`conversation ${entry.id}`, `"${entry.title}"`);
+    const line = el("div", "dayrow");
+    line.append(row, drop);
+    list.append(line);
   }
+  const day = el("button", "menu-item");
+  day.append(el("span", "", "Delete this day"));
+  day.onclick = () => askDelete(`day ${isoOf(date)} --zone=${ZONE}`, `all of ${date.toLocaleDateString("en-US", DAY)}`);
+  list.append(day);
   list.hidden = false;
 }
 
@@ -596,7 +676,7 @@ let viewing = null; // the earlier conversation showing, if one is: typing into 
 
 // An earlier conversation in place of the one showing, with a way back.
 function load(entry) {
-  bridge.call(`conversation ${entry.id}`, (answer) => {
+  bridge.call(`conversation ${entry.id} ${ZONE}`, (answer) => {
     let found;
     try { found = JSON.parse(answer); } catch { return; }
     if (!found.ok) return;
@@ -608,7 +688,9 @@ function load(entry) {
     bar.lastChild.append(el("b", "", found.title));
     const back = el("button", "", "Back to now");
     back.onclick = () => recent();
-    bar.append(el("span", "spacer"), back);
+    const drop = el("button", "drop", "Delete");
+    drop.onclick = () => askDelete(`conversation ${found.id}`, "this conversation");
+    bar.append(el("span", "spacer"), drop, back);
     add(bar);
     navigate(found);
     replay(found.items);
@@ -617,6 +699,8 @@ function load(entry) {
 }
 
 $("history").onclick = () => calendar($("calendar").hidden);
+$("incognito").onclick = () => bridge.call(`incognito ${$("incognito").classList.contains("on") ? "off" : "on"}`);
+$("deleteall").onclick = () => askDelete("all", "all of Morgan's conversation history");
 $("prev").onclick = () => { shownMonth.setMonth(shownMonth.getMonth() - 1); month(); };
 $("next").onclick = () => { shownMonth.setMonth(shownMonth.getMonth() + 1); month(); };
 $("weekdays").append(...["S", "M", "T", "W", "T", "F", "S"].map((letter) => el("span", "", letter)));
@@ -628,7 +712,7 @@ function start() {
   recent(() => {
     bridge.event.connect(hear);
     // The stream's opening line, which says who this is and what it is doing, may have gone by already.
-    bridge.call("status", (status) => { try { const now = JSON.parse(status); hear(JSON.stringify({ type: "state", state: now.state, name: now.name })); } catch { /* not up */ } });
+    bridge.call("status", (status) => { try { const now = JSON.parse(status); hear(JSON.stringify({ type: "state", state: now.state, name: now.name })); showIncognito(Boolean(now.incognito)); } catch { /* not up */ } });
   });
   bridge.dropped.connect((dropped) => { files.push(...JSON.parse(dropped)); chips(); $("draft").focus(); });
 }
