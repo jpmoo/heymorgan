@@ -1,10 +1,14 @@
 # Morgan's client protocol
 
-**Version 1.12**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
+**Version 1.14**, written 2026-10-23 from the code as it stands (`daemon.mjs`,
 `admin.mjs`, `env.mjs`, `access.mjs`, `speech.mjs`, `speaker.mjs`). It describes what the daemon does, not
 what it was meant to do; where the two differ, or where the behavior would
 surprise someone building on it, a **Note** says so.
 
+- **1.14** (2026-11-10): `embed <json>` — texts turned into embeddings by
+  the brain's model server, for a client keeping an index of its own (Talaris's
+  search by meaning) that should reach no machine but the brain. A device hands
+  it to the brain.
 - **1.13** (2026-11-05): `days` and `conversation` take a zone (`days 2026-11 America/Phoenix`), and answer
   by that clock rather than the brain's, as does `delete day` with `--zone=`.
   `delete` — history deleted for good, unlike `rate`'s
@@ -281,6 +285,7 @@ conversation that was nothing else); `recent` and `threads` do not.
 | `reminders` | `{ ok, now, reminders: [{ id, at, text, made, when }] }`, soonest first. `now` (1.10) is the answering machine's clock, which `at` and `made` are on: time left is `at - now`, not `at` less a client's own clock. `text` is empty for a bare timer; `when` is a phrase such as "at 3:15 PM today (in 20 minutes)". |
 | `status` | `{ ok, state, name, model, oracle, stt, tts, wakeWord, wakeEngine, voice, engine, interviewing, mcpTools: [name…], topics: [name…] }`. `name` is Morgan's name; `model` and `oracle` the chat model's and the Oracle's; `stt` and `tts` whether speech in and out are configured; `wakeWord` the phrase or `null`; `wakeEngine` is `spotter` or `transcribe`; `engine` is `kokoro` or `piper`, and `voice` that engine's voice. `speech` (1.11) is where this machine's speech is done: `brain`, `here`, or, for a brain, `service` (a speech service does it). `muted` (1.11) is the device's microphone. A device daemon adds `role: "client"`, `server` and `device`, and answers `stt`, `tts`, `voice` and `engine` from what its brain offers when the brain does its speech, `wakeWord` and `wakeEngine` for itself (§5). |
 | `describe <json>` | `{ "image": "<base64>", "question"?: "…" }`: the picture described by the model that looks — what it is, what it shows, any text in it word for word. Or `{ "text": "…", "name"?: "…", "what"?: "file" \| "project" }`: a file's words described in two or three sentences by the chat model — what it is and what it is about; with `"what": "project"`, a project's tasks, done and to do, described as what the project is for and covers (1.9). Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, text, model, what }` (`what` from 1.9), or `{ ok: false, error }` |
+| `embed <json>` | `{ "texts": ["…", …], "model"?: "…" }`: 1 to 64 texts, each cut to 8000 characters, embedded by the brain's model server (`ollama.url`) with `model`, or the brain's `embedModel` (1.14). The texts go as given — a prefix such as `search_query: ` is the client's to add. Nothing is said, kept, remembered or recorded. A client hands it to the server. | `{ ok, model, embeddings }`, one array of numbers per text in order, as the server gives them; or `{ ok: false, error }` |
 | `admin <json>` | `{ "op": "…", "args": { … } }`: see §4. |
 | `access add <device>` \| `access list` \| `access remove <device>` | On a brain (§6); a device forwards it to its brain. (`devices.*`, §4, says the same with whether each is connected.) `add`: `{ ok, name, key }`, the key shown this once. `list`: `{ ok, keys: [{ name, made, used }] }`. `remove`: `{ ok }`, or `{ ok: false, error: "no key for <device>" }`; a removed key's connection is closed at once. Anywhere else: `{ ok: false, error: "only a server issues access keys" }`. |
 | `watch` | No reply: the connection becomes an event stream (§3). |

@@ -1688,6 +1688,22 @@ const memoryInFull = () => memoryText().length <= cfg.memoryInFull;
 const noteVectors = new Map(); // note text -> its embedding
 let picked = ""; // the notes chosen for the turn in hand
 
+// Texts embedded for a client (the `embed` command): at most this many at once, each cut to this length.
+const EMBED_MOST = 64;
+const EMBED_LONGEST = 8000;
+async function embedTexts(model, texts) {
+  const response = await fetch(`${cfg.ollama.url}/api/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(60_000),
+    body: JSON.stringify({ model, input: texts }),
+  });
+  if (!response.ok) throw new Error(`the model server answered ${response.status}${response.status === 404 ? ` (is ${model} pulled there?)` : ""}`);
+  const { embeddings } = await response.json();
+  if (!Array.isArray(embeddings) || embeddings.length !== texts.length) throw new Error("the model server gave back something else");
+  return embeddings;
+}
+
 // Every note in memory, each with its meaning worked out (once, and kept for as
 // long as the daemon runs).
 async function indexNotes() {
@@ -4801,6 +4817,20 @@ function handle(line, socket) {
           .then((text) => ({ text, model: cfg.ollama.model, what: request.what === "project" ? "project" : "file" }))
         : describePicture(String(request.image ?? ""), request.question ? String(request.question) : "").then((text) => ({ text, model: visionModel() }));
       asked.then((r) => reply({ ok: true, ...r }), (error) => reply({ ok: false, error: error.message }));
+      return;
+    }
+    case "embed": {
+      // Texts turned into embeddings by the model server the brain uses (1.14), for a client that keeps its own index
+      // and should reach no machine but the brain (Talaris's search by meaning): { texts, model? } in, { ok, model,
+      // embeddings } out, each as the server gives it, in order. The texts go as they are given, framing and all.
+      // Nothing said, kept, remembered or recorded.
+      let request;
+      try { request = JSON.parse(rest.join(" ")); } catch { return reply({ ok: false, error: "embed wants JSON: { texts, model? }" }); }
+      const texts = Array.isArray(request.texts) ? request.texts.map(String) : [];
+      if (!texts.length || texts.length > EMBED_MOST) return reply({ ok: false, error: `embed takes 1 to ${EMBED_MOST} texts` });
+      const model = typeof request.model === "string" && request.model.trim() ? request.model.trim() : cfg.embedModel;
+      embedTexts(model, texts.map((text) => text.slice(0, EMBED_LONGEST)))
+        .then((embeddings) => reply({ ok: true, model, embeddings }), (error) => reply({ ok: false, error: error.message }));
       return;
     }
     case "tools":
