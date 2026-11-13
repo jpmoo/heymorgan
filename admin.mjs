@@ -132,10 +132,16 @@ export function createAdmin(d) {
     "memory.garden.run": async () => ({ changes: (await d.garden.run())?.actions.length ?? 0, days: d.garden.report() }),
 
     "memory.list": () => ({
-      topics: d.topics().map((topic) => ({ name: topic.name, description: topic.description, notes: topic.notes })),
+      // Each note's projects, beside it (its Talaris projects, by what it names): `projects[i]` is `notes[i]`'s.
+      topics: d.topics().map((topic) => ({ name: topic.name, description: topic.description, notes: topic.notes,
+        projects: topic.notes.map((note) => d.projectsOf(note).map(({ id, title, via }) => ({ id, title, via }))) })),
+      // Whether a device's Talaris is there to say them now.
+      projectsFrom: d.projectServer(),
       documents: d.documents().map((kept) => ({ title: kept.title, source: kept.source, t: kept.t, size: kept.text.length })),
       pictures: d.pictures().map((picture) => ({ label: picture.label, note: picture.note, t: picture.t })),
     }),
+    // Every note's projects looked at again now, from Talaris (a device's, when it is connected).
+    "memory.projects.refresh": async () => ({ from: d.projectServer(), changed: await d.labelNotes({ again: true }) }),
     "memory.note.add": ({ topic, text }) => edit(topic, (found) => { found.notes.push(clean(text)); }),
     "memory.note.set": ({ topic, index, text }) => edit(topic, (found) => { found.notes[index] = clean(text); }),
     "memory.note.delete": ({ topic, index }) => edit(topic, (found) => { found.notes.splice(index, 1); }),

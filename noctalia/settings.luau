@@ -212,131 +212,236 @@ end
 
 -- ---------------------------------------------------------------- memory
 
-local function memoryTab()
-  local list = D["memory.list"] or {}
-  local topics = list.topics or {}
-  local out = {}
+-- The memory by project: every note Talaris ties to a project, by what it names
+-- (a project, or a person or organization tied to one). Never a project made up.
+local function projectsView(list, out)
+  local projects = {} -- id -> { title, entries }
+  local order = {}
+  local none = 0
+  for _, topic in ipairs(list.topics or {}) do
+    for index, note in ipairs(topic.notes or {}) do
+      local tied = (topic.projects or {})[index] or {}
+      if #tied == 0 then
+        none += 1
+      end
+      for _, project in ipairs(tied) do
+        if not projects[project.id] then
+          projects[project.id] = { id = project.id, title = project.title, entries = {} }
+          table.insert(order, projects[project.id])
+        end
+        table.insert(projects[project.id].entries, { topic = topic.name, index = index, note = note, via = project.via or {} })
+      end
+    end
+  end
+  table.sort(order, function(a, b)
+    return string.lower(a.title) < string.lower(b.title)
+  end)
 
   local chips = {}
   local current = nil
-  for _, topic in ipairs(topics) do
-    if view.topic == nil then
-      view.topic = topic.name
+  for _, project in ipairs(order) do
+    if view.project == nil then
+      view.project = project.id
     end
-    if topic.name == view.topic then
-      current = topic
+    if project.id == view.project then
+      current = project
     end
-    table.insert(chips, choice(`t:{topic.name}`, `{topic.name}  {#topic.notes}`, topic.name == view.topic, function()
-      view = { topic = topic.name }
+    table.insert(chips, choice(`p:{project.id}`, `{project.title}  {#project.entries}`, project.id == view.project, function()
+      view = { by = "project", project = project.id }
       confirming = nil
       render()
     end))
   end
-  table.insert(out, card("Topics", {
-    rows(chips, 4),
-    ui.input({
-      key = `newtopic#{version}`, placeholder = "A new topic: type its name and press Enter", controlSize = "sm",
-      onSubmit = function(name)
-        view = { topic = name }
-        change("memory.topic.add", { name = name }, "Topic added.")
-      end,
+  local about = if list.projectsFrom
+    then `{none} notes name nothing tied to a project.`
+    else "Projects come from Talaris on your laptop, which is not connected now; these are as it last said."
+  table.insert(out, card("Projects", {
+    if #chips > 0 then rows(chips, 4) else hint("No note is tied to a project yet."),
+    hint(about),
+    ui.row({ gap = 6, align = "center" }, {
+      ui.spacer({ flexGrow = 1 }),
+      ui.button({ text = "Look again", glyph = "refresh", variant = "ghost", controlSize = "sm",
+        tooltip = "Ask Talaris again which projects each note is tied to", onClick = function()
+          if not list.projectsFrom then
+            status = "Talaris is not connected: open it on your laptop first."
+            render()
+            return
+          end
+          status = "Asking Talaris…"
+          render()
+          change("memory.projects.refresh", {}, "Projects looked at again.")
+        end }),
     }),
   }))
 
   if current then
     local notes = {}
-    for index, note in ipairs(current.notes) do
-      local at = index - 1 -- the daemon counts from nought
-      if view.editing == index then
-        table.insert(notes, ui.column({ key = `note{index}`, gap = 6, padding = 8, radius = 8, fill = tint(accent, 0.12) }, {
-          ui.input({
-            key = `edit{index}#{version}`, value = note, multiline = true, submitOnEnter = true, focus = true, height = 70,
-            onChange = function(text)
-              drafts.note = text
-            end,
-            onSubmit = function(text)
-              view.editing = nil
-              change("memory.note.set", { topic = current.name, index = at, text = text }, "Note changed.")
-            end,
-          }),
-          ui.row({ gap = 6 }, {
-            ui.button({ text = "Save", variant = "primary", controlSize = "sm", onClick = function()
-              view.editing = nil
-              change("memory.note.set", { topic = current.name, index = at, text = drafts.note or note }, "Note changed.")
-            end }),
-            ui.button({ text = "Cancel", variant = "ghost", controlSize = "sm", onClick = function()
-              view.editing = nil
-              render()
-            end }),
-          }),
-        }))
-      else
-        local row = {
-          ui.row({ key = `note{index}`, gap = 6, align = "center" }, {
-            ui.label({ text = note, color = "on_surface", fontSize = 12, maxWidth = WIDTH - 190, flexGrow = 1 }),
-            ui.button({ glyph = "pencil", variant = "ghost", controlSize = "sm", tooltip = "Edit", onClick = function()
-              view.editing = index
-              view.moving = nil
-              drafts.note = note
-              confirming = nil
-              render()
-            end }),
-            ui.button({ glyph = "arrow-right", variant = "ghost", controlSize = "sm", tooltip = "Move to another topic", onClick = function()
-              view.moving = if view.moving == index then nil else index
-              view.editing = nil
-              confirming = nil
-              render()
-            end }),
-            remove(`del{index}`, "Delete this note", function()
-              change("memory.note.delete", { topic = current.name, index = at }, "Note deleted.")
-            end),
-          }),
-        }
-        if view.moving == index then
-          local targets = {}
-          for _, other in ipairs(topics) do
-            if other.name ~= current.name then
-              table.insert(targets, choice(`mv:{other.name}`, other.name, false, function()
-                view.moving = nil
-                change("memory.note.move", { topic = current.name, index = at, to = other.name }, `Moved to {other.name}.`)
-              end))
-            end
-          end
-          table.insert(row, ui.column({ gap = 4, padding = 8, radius = 8, fill = tint(accent, 0.12) }, { hint("Move it to:"), rows(targets, 4) }))
-        end
-        table.insert(notes, ui.column({ gap = 4 }, row))
-        table.insert(notes, ui.separator({ color = "outline/0.15" }))
-      end
+    for at, entry in ipairs(current.entries) do
+      local why = if #entry.via > 0 and entry.via[1] ~= current.title then ` · by {table.concat(entry.via, ", ")}` else ""
+      table.insert(notes, ui.row({ key = `pn{at}`, gap = 6, align = "center" }, {
+        ui.column({ gap = 2, flexGrow = 1 }, {
+          ui.label({ text = entry.note, color = "on_surface", fontSize = 12, maxWidth = WIDTH - 150 }),
+          hint(`in {entry.topic}{why}`),
+        }),
+        ui.button({ glyph = "arrow-right", variant = "ghost", controlSize = "sm", tooltip = `Open {entry.topic}`, onClick = function()
+          view = { topic = entry.topic }
+          confirming = nil
+          render()
+        end }),
+        remove(`pdel{at}`, "Delete this note", function()
+          change("memory.note.delete", { topic = entry.topic, index = entry.index - 1 }, "Note deleted.")
+        end),
+      }))
+      table.insert(notes, ui.separator({ color = "outline/0.15" }))
     end
-    if #current.notes == 0 then
-      table.insert(notes, hint("Nothing here yet."))
-    end
+    table.insert(out, card(current.title, { ui.column({ gap = 6 }, notes) }))
+  end
+end
 
-    table.insert(out, card(current.name, {
-      field(`describe:{current.name}`, "What belongs here", current.description, "A line saying what goes in this topic", function(text)
-        change("memory.topic.rename", { topic = current.name, name = current.name, description = text }, "Description changed.")
-      end),
-      field(`rename:{current.name}`, "Its name", current.name, "", function(text)
-        view.topic = text
-        change("memory.topic.rename", { topic = current.name, name = text, description = current.description }, "Topic renamed.")
-      end),
-      ui.separator({ color = "outline/0.3" }),
-      ui.column({ gap = 6 }, notes),
+local function memoryTab()
+  local list = D["memory.list"] or {}
+  local topics = list.topics or {}
+  local out = {}
+
+  -- The notes by topic, as they are filed; or by project, as Talaris ties them (what each one names).
+  local byProject = view.by == "project"
+  table.insert(out, ui.row({ gap = 6, align = "center" }, {
+    choice("by:topic", "By topic", not byProject, function()
+      view = { topic = view.topic }
+      confirming = nil
+      render()
+    end),
+    choice("by:project", "By project", byProject, function()
+      view = { by = "project", project = view.project }
+      confirming = nil
+      render()
+    end),
+  }))
+
+  if byProject then
+    projectsView(list, out)
+  else
+    local chips = {}
+    local current = nil
+    for _, topic in ipairs(topics) do
+      if view.topic == nil then
+        view.topic = topic.name
+      end
+      if topic.name == view.topic then
+        current = topic
+      end
+      table.insert(chips, choice(`t:{topic.name}`, `{topic.name}  {#topic.notes}`, topic.name == view.topic, function()
+        view = { topic = topic.name }
+        confirming = nil
+        render()
+      end))
+    end
+    table.insert(out, card("Topics", {
+      rows(chips, 4),
       ui.input({
-        key = `addnote:{current.name}#{version}`, placeholder = "Add a note: type it and press Enter", controlSize = "sm",
-        onSubmit = function(text)
-          change("memory.note.add", { topic = current.name, text = text }, "Note added.")
+        key = `newtopic#{version}`, placeholder = "A new topic: type its name and press Enter", controlSize = "sm",
+        onSubmit = function(name)
+          view = { topic = name }
+          change("memory.topic.add", { name = name }, "Topic added.")
         end,
       }),
-      ui.row({ gap = 6, align = "center" }, {
-        ui.spacer({ flexGrow = 1 }),
-        hint("Delete the whole topic"),
-        remove("deltopic", "Delete this topic and its notes", function()
-          view = {}
-          change("memory.topic.delete", { topic = current.name }, "Topic deleted.")
-        end),
-      }),
     }))
+
+    if current then
+      local notes = {}
+      for index, note in ipairs(current.notes) do
+        local at = index - 1 -- the daemon counts from nought
+        if view.editing == index then
+          table.insert(notes, ui.column({ key = `note{index}`, gap = 6, padding = 8, radius = 8, fill = tint(accent, 0.12) }, {
+            ui.input({
+              key = `edit{index}#{version}`, value = note, multiline = true, submitOnEnter = true, focus = true, height = 70,
+              onChange = function(text)
+                drafts.note = text
+              end,
+              onSubmit = function(text)
+                view.editing = nil
+                change("memory.note.set", { topic = current.name, index = at, text = text }, "Note changed.")
+              end,
+            }),
+            ui.row({ gap = 6 }, {
+              ui.button({ text = "Save", variant = "primary", controlSize = "sm", onClick = function()
+                view.editing = nil
+                change("memory.note.set", { topic = current.name, index = at, text = drafts.note or note }, "Note changed.")
+              end }),
+              ui.button({ text = "Cancel", variant = "ghost", controlSize = "sm", onClick = function()
+                view.editing = nil
+                render()
+              end }),
+            }),
+          }))
+        else
+          local row = {
+            ui.row({ key = `note{index}`, gap = 6, align = "center" }, {
+              ui.label({ text = note, color = "on_surface", fontSize = 12, maxWidth = WIDTH - 190, flexGrow = 1 }),
+              ui.button({ glyph = "pencil", variant = "ghost", controlSize = "sm", tooltip = "Edit", onClick = function()
+                view.editing = index
+                view.moving = nil
+                drafts.note = note
+                confirming = nil
+                render()
+              end }),
+              ui.button({ glyph = "arrow-right", variant = "ghost", controlSize = "sm", tooltip = "Move to another topic", onClick = function()
+                view.moving = if view.moving == index then nil else index
+                view.editing = nil
+                confirming = nil
+                render()
+              end }),
+              remove(`del{index}`, "Delete this note", function()
+                change("memory.note.delete", { topic = current.name, index = at }, "Note deleted.")
+              end),
+            }),
+          }
+          if view.moving == index then
+            local targets = {}
+            for _, other in ipairs(topics) do
+              if other.name ~= current.name then
+                table.insert(targets, choice(`mv:{other.name}`, other.name, false, function()
+                  view.moving = nil
+                  change("memory.note.move", { topic = current.name, index = at, to = other.name }, `Moved to {other.name}.`)
+                end))
+              end
+            end
+            table.insert(row, ui.column({ gap = 4, padding = 8, radius = 8, fill = tint(accent, 0.12) }, { hint("Move it to:"), rows(targets, 4) }))
+          end
+          table.insert(notes, ui.column({ gap = 4 }, row))
+          table.insert(notes, ui.separator({ color = "outline/0.15" }))
+        end
+      end
+      if #current.notes == 0 then
+        table.insert(notes, hint("Nothing here yet."))
+      end
+
+      table.insert(out, card(current.name, {
+        field(`describe:{current.name}`, "What belongs here", current.description, "A line saying what goes in this topic", function(text)
+          change("memory.topic.rename", { topic = current.name, name = current.name, description = text }, "Description changed.")
+        end),
+        field(`rename:{current.name}`, "Its name", current.name, "", function(text)
+          view.topic = text
+          change("memory.topic.rename", { topic = current.name, name = text, description = current.description }, "Topic renamed.")
+        end),
+        ui.separator({ color = "outline/0.3" }),
+        ui.column({ gap = 6 }, notes),
+        ui.input({
+          key = `addnote:{current.name}#{version}`, placeholder = "Add a note: type it and press Enter", controlSize = "sm",
+          onSubmit = function(text)
+            change("memory.note.add", { topic = current.name, text = text }, "Note added.")
+          end,
+        }),
+        ui.row({ gap = 6, align = "center" }, {
+          ui.spacer({ flexGrow = 1 }),
+          hint("Delete the whole topic"),
+          remove("deltopic", "Delete this topic and its notes", function()
+            view = {}
+            change("memory.topic.delete", { topic = current.name }, "Topic deleted.")
+          end),
+        }),
+      }))
+    end
   end
 
   local documents = {}

@@ -1734,13 +1734,16 @@ async function pickNotes(text) {
   const all = await indexNotes();
   const query = await transcript.embed(`search_query: ${text}`);
   const wanted = new Set(words(text).filter((word) => word.length >= 4));
+  // A project the turn names lifts the notes tied to it: ranked higher, never brought in on that alone.
+  const named = projectsNamed(text);
   const scored = all.map((entry) => {
     const vector = noteVectors.get(entry.note);
     let meaning = 0;
     for (let i = 0; i < query.length; i++) meaning += query[i] * vector[i];
     // Names and exact words are where meaning alone lets you down.
     const shared = words(entry.note).filter((word) => wanted.has(word)).length;
-    return { ...entry, score: meaning + 0.06 * Math.min(shared, 3) };
+    const ofNamed = named.size > 0 && projectsOf(entry.note).some((project) => named.has(project.id));
+    return { ...entry, score: meaning + 0.06 * Math.min(shared, 3) + (ofNamed ? 0.08 : 0) };
   }).sort((a, b) => b.score - a.score);
   // Who the user is and how they like to be dealt with bear on every turn.
   const always = (topic) => /^about\b/i.test(topic) || /^preferences$/i.test(topic);
@@ -1755,6 +1758,72 @@ function topicList() {
   const all = topics();
   if (!all.length) return "(none yet)";
   return all.map((topic) => `- ${topic.name}: ${topic.description} (${topic.notes.length} notes)`).join("\n");
+}
+
+// Which Talaris projects each note is tied to — worked out by Talaris
+// (talaris_note_projects, offered by the device it runs on) from what the note
+// names: a project, or a person or organization tied to one, the ties Glance
+// draws. Never guessed here, never a project made up, and never from what the
+// user is doing: only the note's own words go to Talaris, and nothing of this
+// goes to the Oracle. Used to rank notes when a turn names a project, and to
+// show the memory by project in settings. Looked at again daily, as ties change.
+const PROJECTS = join(MEMORY, "projects.sealed");
+const PROJECTS_TOOL = "talaris_note_projects";
+const PROJECTS_AGAIN = 24 * 3600_000;
+let noteProjects = {}; // a note's words -> { at, projects: [{ id, title, via }] }
+try { if (existsSync(PROJECTS)) noteProjects = JSON.parse(readSealed(PROJECTS)) ?? {}; } catch { /* worked out again */ }
+const projectKey = (note) => words(bareNote(note)).join(" ");
+const projectsOf = (note) => noteProjects[projectKey(note)]?.projects ?? [];
+/** The connected service that can say a note's projects: Talaris's, through the device it runs on. */
+const projectServer = () => [...mcpAll].find(([name, held]) => mcpClients.has(name) && held.tools?.some?.((tool) => tool.name === PROJECTS_TOOL))?.[0] ?? null;
+let labelling = null;
+/** Every note not yet looked at, or not lately (all of them, `again`), given its projects. Answers how many changed. */
+function labelNotes({ again = false } = {}) {
+  labelling ??= (async () => {
+    const server = projectServer();
+    if (!server || incognito) return 0;
+    const now = Date.now();
+    const notes = [...new Set(topics().flatMap((topic) => topic.notes))];
+    const due = notes.filter((note) => { const had = noteProjects[projectKey(note)]; return again || !had || now - had.at > PROJECTS_AGAIN; });
+    let changed = 0;
+    for (let at = 0; at < due.length; at += 100) {
+      const batch = due.slice(at, at + 100);
+      const said = JSON.parse(String(await mcpClients.get(server).call(PROJECTS_TOOL, { texts: batch.map(bareNote) })));
+      if (!Array.isArray(said)) throw new Error("Talaris answered something else");
+      batch.forEach((note, index) => {
+        const projects = (Array.isArray(said[index]) ? said[index] : [])
+          .filter((p) => p && typeof p.id === "string" && typeof p.title === "string")
+          .map((p) => ({ id: p.id, title: p.title, via: Array.isArray(p.via) ? p.via.map(String) : [] }));
+        const key = projectKey(note);
+        if (JSON.stringify(noteProjects[key]?.projects ?? null) !== JSON.stringify(projects)) changed++;
+        noteProjects[key] = { at: now, projects };
+      });
+    }
+    // A note gone takes its projects with it.
+    const kept = new Set(notes.map(projectKey));
+    for (const key of Object.keys(noteProjects)) if (!kept.has(key)) delete noteProjects[key];
+    writeSealed(PROJECTS, JSON.stringify(noteProjects));
+    if (changed) console.log(`note projects: ${changed} changed of ${due.length} looked at`);
+    return changed;
+  })().catch((error) => { console.error(`note projects: ${error.message}`); return 0; }).finally(() => { labelling = null; });
+  return labelling;
+}
+// New notes are looked at within minutes; every note again each day.
+setInterval(() => { labelNotes(); }, 5 * 60_000).unref?.();
+
+/** The projects a turn names: a project's own name, or a whole name that ties a note to one. */
+function projectsNamed(text) {
+  const named = new Set();
+  const edge = (name, flags) => new RegExp(`(^|[^\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, flags);
+  for (const { projects } of Object.values(noteProjects)) {
+    for (const project of projects) {
+      if (named.has(project.id)) continue;
+      const names = [project.title, ...project.via.filter((name) => /\s/.test(name))];
+      // Any case: speech comes in lower case, and a wrong match only lifts a note a little (the labels are strict).
+      if (names.some((name) => name.length >= 3 && edge(name, "iu").test(text))) named.add(project.id);
+    }
+  }
+  return named;
 }
 
 // Which exchanges a note came from, kept beside the notes: so that when an
@@ -4918,6 +4987,7 @@ const admin = createAdmin({
   cfg, defaults, LIVE, interruptWord,
   topics, readTopic, writeTopic, topicPath, slug,
   documents, documentPath, pictures, picturePath,
+  projectsOf, labelNotes, projectServer,
   mcpAll, reconnectMcp, enroll, enrollOn, forgetVoice, voicesStatus, logLines,
   garden: { report: tendingReport, run: () => tend({ force: true }), undo: untend },
   // Which models can see: the chat model, and the one that looks (protocol 1.7, `vision.check`).
@@ -5125,6 +5195,8 @@ function offerDeviceTools(link, device) {
     device.servers.push(name);
     console.error(`mcp: ${name} offered by ${device.name}, ${tools.length} tools`);
   }
+  // A device back with Talaris: the notes waiting for their projects are given them now.
+  if (projectServer()) setTimeout(() => { labelNotes(); }, 5000);
 }
 
 // A brain kept in its checkout (the home server) is reached from the network; one in a laptop's session, only
