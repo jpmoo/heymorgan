@@ -6,6 +6,9 @@ laptop itself if that is where the brain is). The plan behind it is
 in [server-and-satellites.md](server-and-satellites.md); this is how to set one
 up today, and what is not there yet.
 
+To build one, from a blank SD card to a closed Dot, with a check after each
+step: [pi-build.md](pi-build.md).
+
 ## What runs where
 
 The Pi is a **device**: it listens for the wake word, sends what is said to

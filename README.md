@@ -101,6 +101,7 @@ A few things are true whichever setup you pick:
 | `docs/server-and-satellites.md` | The plan behind brain and devices, and how far it has got. |
 | `docs/rename.md` | The move from heyclaude to heymorgan, and the old names still answered. |
 | `docs/pi.md` | A Raspberry Pi in a speaker as a voice-only client: setup, its own settings, what is not there yet. |
+| `docs/pi-build.md` | Building the Dot: the bench steps, then into the shell, a check after each. |
 
 ## What it needs, beyond this repository
 
