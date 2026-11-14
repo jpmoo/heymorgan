@@ -10,7 +10,7 @@
 // new, status, watch) and streams events.
 
 import { ROLE, CLIENT, CLIENT_FILE, CONFIG_HOME, HEADLESS, HOUSED, MIRROR, SHARE, TRIAL } from "./env.mjs"; // first: which part this copy plays, and where things are kept
-import { execFile, spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { connect, createServer } from "node:net";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
@@ -541,7 +541,11 @@ const run = promisify(execFile);
 const SIGHT = {
   screen: { tool: "look_at_screen", what: "screenshot", hint: "look_at_screen shows you the window they are working in" },
   clipboard: { tool: "look_at_clipboard", what: "copied image", hint: "look_at_clipboard shows you what they last copied" },
-  camera: { tool: "look_at_camera", what: "photo from the camera", hint: "look_at_camera shows you what is in front of the device, usually them" },
+  camera: { tool: "look_at_camera", what: "photo from the camera", hint: "look_at_camera shows you what is in front of the device, usually them",
+    // A camera that faces the person is not a mirror: what is on their left is on the picture's right. Told so, the
+    // one describing it says left and right as they would; the picture itself is left as it is, so text held up
+    // to it can still be read.
+    facing: "This camera faces the person using it, and the picture is not mirrored: whatever is on the picture's left is on their right. Say left and right as they see it, from where they sit — their left, their right — never the picture's." },
 };
 
 // What this machine can actually look at: a camera device, and a desktop with
@@ -690,7 +694,8 @@ async function describeFrame(bytes, source, question) {
         role: "user",
         content: `This is a ${SIGHT[source].what}, just taken. visible: false if it is dark, blank, or too blurred to make anything out. `
           + `description: what it shows, fully enough to answer this: "${question ?? "What is this?"}" Quote exactly any text that matters. `
-          + "Plain prose, no lists. Describe only what is in this image.",
+          + "Plain prose, no lists. Describe only what is in this image."
+          + (SIGHT[source].facing ? ` ${SIGHT[source].facing}` : ""),
         images: [bytes.toString("base64")],
       }],
     }),
@@ -4206,13 +4211,32 @@ let spokenTurn = false; // the turn in progress came from the microphone
 const CLEAN_MIC = "heymorgan.mic";
 let canceller = null;
 
+/**
+ * The microphone the canceller listens to, by name: the system's default source if it is a microphone, else the
+ * first microphone there is. Left to PipeWire, the canceller's input was linked to "the default" — and on a
+ * machine whose default source was not yet settled (a mini laptop, its sound chip taking its headset jack for
+ * plugged in), to the speakers' own monitor: the canceller heard only what was played, and the wake word nothing.
+ */
+function microphone() {
+  // Only a source PipeWire calls a microphone counts: a default "source" can be the speakers' own output (the mini
+  // laptop's was), which is a sink, and a monitor of it is not a microphone.
+  let nodes = [];
+  try { nodes = JSON.parse(execFileSync("pw-dump", [], { encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024 })); } catch { return null; }
+  const mics = nodes.filter((o) => o.type === "PipeWire:Interface:Node" && o.info?.props?.["media.class"] === "Audio/Source"
+    && !String(o.info.props["node.name"] ?? "").startsWith("heymorgan.")).map((o) => o.info.props["node.name"]);
+  let preferred = null;
+  try { preferred = execFileSync("wpctl", ["inspect", "@DEFAULT_AUDIO_SOURCE@"], { encoding: "utf8", timeout: 3000 }).match(/node\.name = "([^"]+)"/)?.[1] ?? null; } catch { /* none said */ }
+  return mics.includes(preferred) ? preferred : mics[0] ?? null;
+}
+
 function startCanceller() {
   if (!cfg.echoCancel) return;
   canceller = spawn("pw-cli", [], { stdio: ["pipe", "ignore", "ignore"] });
   canceller.on("error", () => { canceller = null; });
   canceller.on("exit", () => { canceller = null; });
+  const from = microphone();
   canceller.stdin.write("load-module libpipewire-module-echo-cancel { library.name = aec/libspa-aec-webrtc monitor.mode = true"
-    + " capture.props = { node.name = heymorgan.ec.capture node.passive = true }"
+    + ` capture.props = { node.name = heymorgan.ec.capture node.passive = true${from ? ` target.object = "${from}"` : ""} }`
     + ` source.props = { node.name = ${CLEAN_MIC} node.description = "Morgan microphone (echo cancelled)" priority.session = 1 } }\n`);
 }
 
