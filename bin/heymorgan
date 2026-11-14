@@ -124,6 +124,25 @@ function memoryKey(pasted) {
 // input waited for Ctrl+D, and a pasted key seemed to go nowhere). Blank lines
 // before it are skipped: a key copied from a terminal often brings the line
 // break before it, and that empty line was taken for the whole answer.
+// What was pasted, every line of it, run together: a terminal wraps a long token, and its lines arrive as several.
+// The pasting is over once nothing more has come for a moment.
+function pasted() {
+  return new Promise((resolve) => {
+    const input = createInterface({ input: process.stdin });
+    let got = "";
+    let quiet = null;
+    const done = () => { input.close(); resolve(got); };
+    input.on("line", (line) => {
+      const part = line.replace(/\x1b\[20[01]~/g, "").trim();
+      if (!part && !got) return;
+      got += part;
+      clearTimeout(quiet);
+      quiet = setTimeout(done, 400);
+    });
+    input.once("close", () => { clearTimeout(quiet); resolve(got); });
+  });
+}
+
 function firstLine() {
   return new Promise((resolve) => {
     const input = createInterface({ input: process.stdin });
@@ -254,13 +273,15 @@ if (args[0] === "login" && args[1] === "--token") {
   const made = spawnSync("claude", ["setup-token"], { env: oracleEnv({ token: false }), stdio: "inherit" });
   if (made.status !== 0) process.exit(made.status ?? 1);
   console.error("\nPaste the token it showed (it begins sk-ant-oat) and press Enter.");
-  const token = (await firstLine()).replace(/\x1b\[20[01]~/g, "").trim();
+  const token = (await pasted()).replace(/\s+/g, "");
   if (!/^sk-ant-oat[\w-]+$/.test(token)) { console.error("heymorgan: that is not a Claude token (they begin sk-ant-oat); nothing was kept"); process.exit(1); }
   mkdirSync(dirname(ORACLE_TOKEN), { recursive: true });
   writeFileSync(ORACLE_TOKEN, token + "\n", { mode: 0o600 });
   const tried = spawnSync("claude", ["-p", "Reply with the one word: ready"], { env: oracleEnv(), encoding: "utf8", timeout: 90_000 });
   if (tried.status !== 0 || !/ready/i.test(tried.stdout)) {
-    console.error(`heymorgan: the token is kept, but the Oracle could not answer on it: ${(tried.stdout + tried.stderr).trim().split("\n").pop()}`);
+    // Not kept: a token that does not work would be tried before a login that does.
+    rmSync(ORACLE_TOKEN, { force: true });
+    console.error(`heymorgan: the Oracle could not answer on that token, so it was not kept: ${(tried.stdout + tried.stderr).trim().split("\n").pop()}`);
     process.exit(1);
   }
   console.error(`The Oracle answers on its own token now, kept in ${ORACLE_TOKEN}. Restarting the assistant to take it up.`);
