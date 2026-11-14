@@ -19,7 +19,7 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { McpClient } from "./mcp.mjs";
-import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, enrolPhrases, isHere, serveHere, stopServingHere, TOOL_MODES, readOnly, serviceName, readSealed, toolAllowed, toolMode, writeSealed } from "./lib.mjs";
+import { BASICS, KOKORO, KOKORO_VOICES, STARTER_TOPICS, enrolPhrases, isHere, oracleEnv, serveHere, stopServingHere, TOOL_MODES, readOnly, serviceName, readSealed, toolAllowed, toolMode, writeSealed } from "./lib.mjs";
 import { fileURLToPath } from "node:url";
 import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
@@ -3904,21 +3904,11 @@ function interrupt() {
 // full one has the web and takes its time; the quick one is a smaller model
 // with no tools, for facts that want getting right but not looking up.
 
-function oracleEnv() {
-  // The Oracle has its own login. Nothing inherited may point it elsewhere.
-  const env = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!/^(CLAUDE|ANTHROPIC)/.test(key)) env[key] = value;
-  }
-  env.ANTHROPIC_CONFIG_DIR = join(CONFIG_HOME, "anthropic");
-  env.CLAUDE_CONFIG_DIR = join(CONFIG_HOME, "claude");
-  return env;
-}
 
 // The Oracle's Claude login gone stale (expired, logged out): said as that, so it is put right where it lives —
 // not passed on as an answer, which Morgan once told as "the Oracle found nothing".
 const LOGGED_OUT = /oauth|token (has )?expired|\/login|not logged in|log ?in again|authentication_error|invalid api key|\b401\b/i;
-const LOGIN_LAPSED = "The Oracle could not answer: its Claude login has expired. It is put right by running `heymorgan login` on the brain"
+const LOGIN_LAPSED = "The Oracle could not answer: its Claude login has expired. It is put right by running `heymorgan login --token` on the brain"
   + " (the home server). Tell the user exactly that, plainly; do not say the Oracle found nothing.";
 
 function makeOracle({ label, model, tools, allowed, prompt }) {

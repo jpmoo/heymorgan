@@ -12,7 +12,7 @@ import { connect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { BASICS, VOICES, fetchVoice, isHere, loadConfig, oracleEnv, restartDaemon, saveConfig, serveHere, serviceName, stopServingHere } from "../lib.mjs";
+import { BASICS, ORACLE_TOKEN, VOICES, fetchVoice, isHere, loadConfig, oracleEnv, oracleToken, restartDaemon, saveConfig, serveHere, serviceName, stopServingHere } from "../lib.mjs";
 
 const args = process.argv.slice(2);
 const ORACLE = { login: ["auth", "login", "--claudeai"], logout: ["auth", "logout"], account: ["auth", "status", "--text"] };
@@ -41,6 +41,7 @@ if (!args.length || ["help", "-h", "--help"].includes(args[0])) {
     "heymorgan interview             the orientation interview",
     "heymorgan voice [name]          list voices | switch to one",
     "heymorgan login|logout|account  the Oracle's Claude login",
+    "heymorgan login --token         the Oracle on a long-lived token (about a year): for a brain no one sits at",
     "heymorgan status | watch        the daemon's state | its event stream",
     "heymorgan attach <file>...      put files on your next message in the chat window",
     "heymorgan reminders             timers and reminders that are set",
@@ -246,8 +247,34 @@ if (args[0] === "settings") {
   process.exit(0);
 }
 
+// A long-lived token (`claude setup-token`, about a year) for the Oracle, kept in its own folder: a login kept alive by
+// refreshing can fail to refresh, and a brain no one sits at then has an Oracle that cannot answer until it is noticed.
+if (args[0] === "login" && args[1] === "--token") {
+  console.error("Claude makes a long-lived token for the Oracle. Follow it through; it shows the token at the end.\n");
+  const made = spawnSync("claude", ["setup-token"], { env: oracleEnv({ token: false }), stdio: "inherit" });
+  if (made.status !== 0) process.exit(made.status ?? 1);
+  console.error("\nPaste the token it showed (it begins sk-ant-oat) and press Enter.");
+  const token = (await firstLine()).replace(/\x1b\[20[01]~/g, "").trim();
+  if (!/^sk-ant-oat[\w-]+$/.test(token)) { console.error("heymorgan: that is not a Claude token (they begin sk-ant-oat); nothing was kept"); process.exit(1); }
+  mkdirSync(dirname(ORACLE_TOKEN), { recursive: true });
+  writeFileSync(ORACLE_TOKEN, token + "\n", { mode: 0o600 });
+  const tried = spawnSync("claude", ["-p", "Reply with the one word: ready"], { env: oracleEnv(), encoding: "utf8", timeout: 90_000 });
+  if (tried.status !== 0 || !/ready/i.test(tried.stdout)) {
+    console.error(`heymorgan: the token is kept, but the Oracle could not answer on it: ${(tried.stdout + tried.stderr).trim().split("\n").pop()}`);
+    process.exit(1);
+  }
+  console.error(`The Oracle answers on its own token now, kept in ${ORACLE_TOKEN}. Restarting the assistant to take it up.`);
+  restartDaemon();
+  process.exit(0);
+}
+
 if (ORACLE[args[0]]) {
-  const result = spawnSync("claude", [...ORACLE[args[0]], ...args.slice(1)], { env: oracleEnv(), stdio: "inherit" });
+  if (args[0] === "logout" && oracleToken()) {
+    rmSync(ORACLE_TOKEN, { force: true });
+    console.error(`The Oracle's long-lived token is gone (${ORACLE_TOKEN}).`);
+  }
+  if (args[0] === "account" && oracleToken()) console.log(`The Oracle answers on a long-lived token (heymorgan login --token), kept in ${ORACLE_TOKEN}.`);
+  const result = spawnSync("claude", [...ORACLE[args[0]], ...args.slice(1)], { env: oracleEnv({ token: args[0] !== "logout" }), stdio: "inherit" });
   process.exit(result.status ?? 1);
 }
 

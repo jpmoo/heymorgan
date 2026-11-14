@@ -34,6 +34,19 @@ else on the machine:
 On a machine with no browser it prints a link to open elsewhere and asks for the
 code it shows. `./bin/heymorgan account` should then name the personal account.
 
+That login is kept alive by refreshing, and a refresh can fail ("OAuth session
+expired and could not be refreshed"), leaving the Oracle unable to answer until
+someone notices. On a brain no one sits at, give it a long-lived token instead
+(about a year, from `claude setup-token`; it needs a Claude subscription):
+
+```bash
+./bin/heymorgan login --token
+```
+
+It is kept in `~/.config/heymorgan/anthropic/oauth-token` and used before the
+login. `./bin/heymorgan logout` removes it. When it does run out, Morgan says
+the Oracle's login has expired rather than that it found nothing.
+
 ## 3. What Morgan knows, moved from the laptop
 
 On the laptop, stop Morgan so nothing changes while it is copied:

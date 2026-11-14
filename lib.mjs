@@ -68,15 +68,25 @@ export function saveConfig(config) {
   writeFileSync(CONFIG, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 }
 
+// The Oracle's long-lived token (`heymorgan login --token`, from `claude setup-token`): on a brain no one sits at,
+// a login that lasts about a year rather than one kept alive by refreshing — which can fail ("OAuth session expired
+// and could not be refreshed") and leave the Oracle silent until someone logs it in again.
+export const ORACLE_TOKEN = join(CONFIG_HOME, "anthropic", "oauth-token");
+export function oracleToken() {
+  try { return readFileSync(ORACLE_TOKEN, "utf8").trim() || null; } catch { return null; }
+}
+
 // The Oracle's Claude login lives in its own directories, apart from any
-// other Claude login on this machine.
-export function oracleEnv() {
+// other Claude login on this machine — or is its own long-lived token.
+export function oracleEnv({ token = true } = {}) {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (!/^(CLAUDE|ANTHROPIC)/.test(key)) env[key] = value;
   }
   env.ANTHROPIC_CONFIG_DIR = join(CONFIG_HOME, "anthropic");
   env.CLAUDE_CONFIG_DIR = join(CONFIG_HOME, "claude");
+  const kept = token && oracleToken();
+  if (kept) env.CLAUDE_CODE_OAUTH_TOKEN = kept;
   return env;
 }
 

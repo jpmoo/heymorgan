@@ -256,7 +256,7 @@ links behind.
 ## Where things are kept
 
 - Settings: the brain's, in `~/.config/heymorgan/config.json` (a home server's: `data/config.json`), not encrypted, holding any MCP access keys. A device keeps a copy of them in `mirror.json` beside it, and its own in `client.json`.
-- The Oracle's Claude login: `~/.config/heymorgan/anthropic` and `~/.config/heymorgan/claude`, apart from any other Claude login on the machine.
+- The Oracle's Claude login: `~/.config/heymorgan/anthropic` and `~/.config/heymorgan/claude`, apart from any other Claude login on the machine. A long-lived token, if one was made (`heymorgan login --token`), is `~/.config/heymorgan/anthropic/oauth-token`.
 - Memory topics, saved pictures, voiceprints and the transcript: `~/.local/share/heymorgan/memory` and `history`, encrypted with a key in the login keyring — on the machine the brain is on.
 - The brain's device keys, as hashes: `~/.config/heymorgan/access.json` (a home server's: `data/access.json`). A device's own key and settings: `~/.config/heymorgan/client.json`.
 
