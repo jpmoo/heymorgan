@@ -3915,6 +3915,12 @@ function oracleEnv() {
   return env;
 }
 
+// The Oracle's Claude login gone stale (expired, logged out): said as that, so it is put right where it lives —
+// not passed on as an answer, which Morgan once told as "the Oracle found nothing".
+const LOGGED_OUT = /oauth|token (has )?expired|\/login|not logged in|log ?in again|authentication_error|invalid api key|\b401\b/i;
+const LOGIN_LAPSED = "The Oracle could not answer: its Claude login has expired. It is put right by running `heymorgan login` on the brain"
+  + " (the home server). Tell the user exactly that, plainly; do not say the Oracle found nothing.";
+
 function makeOracle({ label, model, tools, allowed, prompt }) {
   let child = null;
   let buffer = "";
@@ -3938,6 +3944,14 @@ function makeOracle({ label, model, tools, allowed, prompt }) {
     } else if (message.type === "result") {
       if (drop) { drop = false; return; }
       const text = String(message.result ?? "").trim();
+      if (message.is_error && LOGGED_OUT.test(text)) {
+        console.error(`${label}: its Claude login has lapsed: ${text}`);
+        // Let go of this one: the next question starts one afresh, on the login as it is by then.
+        const stale = child;
+        child = null;
+        stale?.kill("SIGTERM");
+        return answer(LOGIN_LAPSED);
+      }
       answer(message.is_error ? `The Oracle could not answer: ${text}` : text);
     }
   }
@@ -3967,12 +3981,13 @@ function makeOracle({ label, model, tools, allowed, prompt }) {
       }
     });
     mine.stderr.setEncoding("utf8");
-    mine.stderr.on("data", (text) => console.error(`${label}:`, text.trimEnd()));
+    let said = "";
+    mine.stderr.on("data", (text) => { said = (said + text).slice(-2000); console.error(`${label}:`, text.trimEnd()); });
     mine.on("error", (error) => console.error(`${label}:`, error.message));
     mine.on("exit", (code) => {
       if (child !== mine) return;
       child = null;
-      answer(`The Oracle could not be reached (exit code ${code}).`);
+      answer(LOGGED_OUT.test(said) ? LOGIN_LAPSED : `The Oracle could not be reached (exit code ${code}).`);
     });
   }
 
@@ -5430,6 +5445,10 @@ let homeLink = null; // the open connection to the server, once it has let us in
 const replies = new Map(); // command id -> its resolve
 let nextCommand = 0;
 let ownSpoken = false; // the turn in hand was spoken to this client, so its answer is spoken here
+// The turn in hand was started here (said, typed, asked, a reminder said aloud): only then is the brain's state this
+// device's. Another device's turn reaches here as the conversation (what was said, the answer) but not as being busy:
+// taken as this device's, it put Morgan up on every screen at once, and could leave one waiting on a turn it never had.
+let ownTurn = false;
 
 const homeAddress = (address) => {
   const text = String(address ?? "").trim();
@@ -5713,8 +5732,10 @@ function mirror(config) {
 function fromHome(event) {
   switch (event.type) {
     case "state":
+      if (!ownTurn) return;
       quiet = Boolean(event.typed);
       if (event.state === "idle") {
+        ownTurn = false;
         if (ownSpoken) { ownSpoken = false; return finishSpeaking(); }
         if (!speaking() && !active) setState("idle");
         return;
@@ -5728,7 +5749,7 @@ function fromHome(event) {
     case "reminder":
       emit(event);
       // A reminder going off is said aloud by every client that can speak (one set, changed or cancelled is not).
-      if (!event.set && !event.cancelled && canSpeak()) { ownSpoken = true; spokenTurn = true; quiet = false; }
+      if (!event.set && !event.cancelled && canSpeak()) { ownSpoken = true; ownTurn = true; spokenTurn = true; quiet = false; }
       return;
     case "level":
       return; // the server has no voice of its own to measure
@@ -5750,6 +5771,7 @@ async function readAttachments(files) {
 
 // A turn said or typed here, handed to the server.
 async function askServer(text, { typed = false, files = [] } = {}) {
+  ownTurn = true;
   if (!typed) { ownSpoken = true; spokenTurn = true; }
   const answer = files.length
     ? await remote(`ask ${JSON.stringify({ text, typed, attached: await readAttachments(files) })}`)
@@ -5760,6 +5782,7 @@ async function askServer(text, { typed = false, files = [] } = {}) {
 // Said, and shown, when the server cannot be reached: a silent device is worse than one that admits it.
 function cannotReach(error, aloud) {
   ownSpoken = false;
+  ownTurn = false;
   emit({ type: "error", message: error });
   if (!aloud || !DESK) return setState("idle");
   quiet = false;
@@ -5781,7 +5804,9 @@ async function clientCommand(command, rest, line, reply) {
     stopActive();
     stopSpeech();
     ownSpoken = false;
+    ownTurn = false;
   }
+  if (["say", "type", "ask"].includes(command)) ownTurn = true;
   if (command === "say") { stopActive(); ownSpoken = true; spokenTurn = true; }
   if (command === "type") stopActive();
   if (command === "ask") {
