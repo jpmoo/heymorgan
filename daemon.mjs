@@ -598,6 +598,24 @@ const sightTools = () => seeable().map((source) => ({
 }, {
   type: "function",
   function: {
+    name: "put_picture_on",
+    description: "Make a picture the picture of a person or thing in Talaris — what its card shows — only when the user asks, "
+      + "as in put my picture on my card, use this as Ann's photo, that is our logo. The picture comes from the camera, the "
+      + "screen or the clipboard now, or is one kept with remember_picture (source remembered, and its label). Find the "
+      + "person or thing first with talaris_find, and give its id.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The Talaris entity id of the person or thing" },
+        source: { type: "string", enum: [...cfg.sight, "remembered"], description: "Where the picture comes from" },
+        label: { type: "string", description: "For a remembered picture: whose, as it was kept" },
+      },
+      required: ["id", "source"],
+    },
+  },
+}, {
+  type: "function",
+  function: {
     name: "forget_picture",
     description: "Delete a saved picture.",
     parameters: { type: "object", properties: { label: { type: "string" } }, required: ["label"] },
@@ -810,6 +828,42 @@ async function sightIntent(text, likely) {
   } catch (error) {
     console.error(`sight: ${error.message}`);
     return null;
+  }
+}
+
+// A picture made the picture of a person or thing in Talaris (its card's): taken now, or one kept, made small,
+// and given to Talaris's own tool, wherever a device offers it. Asked for in so many words, as remember_picture is.
+async function putPictureOn(args) {
+  if (memoryHeld()) return held();
+  const id = String(args.id ?? "").trim();
+  const source = String(args.source ?? "camera");
+  if (!id) return "No person or thing given: find it with talaris_find first.";
+  const server = [...mcpClients.keys()].find((name) => mcpAll.get(name)?.tools?.some((tool) => tool.name === "talaris_set_picture"));
+  if (!server) return "Talaris is not reachable from here, so the picture cannot be put on anything.";
+  let bytes;
+  if (source === "remembered") {
+    const label = slug(String(args.label ?? ""));
+    const kept = pictures().find((picture) => slug(picture.label) === label);
+    if (!kept) return `There is no kept picture of ${args.label ?? "that"}.`;
+    bytes = Buffer.from(kept.data, "base64");
+  } else {
+    if (!cfg.sight.includes(source)) return "You are not allowed to look at that.";
+    const fresh = lastLook && lastLook.source === source && Date.now() - lastLook.t < 120_000;
+    bytes = fresh ? lastLook.bytes : await capture(source, args);
+    if (bytes.text) return "There is no picture there.";
+  }
+  const file = join(RUNTIME, `heymorgan-card-${process.pid}`);
+  try {
+    // Small enough for a card, and every machine's copy of it.
+    writeFileSync(`${file}.in`, bytes, { mode: 0o600 });
+    await run("ffmpeg", ["-loglevel", "error", "-y", "-i", `${file}.in`, "-vf", "scale='min(768,iw)':-2", "-q:v", "4", `${file}.jpg`]);
+    const result = await mcpClients.get(server).call("talaris_set_picture", { id, image: readFileSync(`${file}.jpg`).toString("base64"), mediaType: "image/jpeg" });
+    return String(result).slice(0, 400);
+  } catch (error) {
+    return `The picture could not be put on it: ${error.message.split("\n")[0]}`;
+  } finally {
+    rmSync(`${file}.in`, { force: true });
+    rmSync(`${file}.jpg`, { force: true });
   }
 }
 
@@ -2306,7 +2360,7 @@ const toolLog = []; // the last few tool calls and the start of what came back
 const changes = new Set(); // names of the tools that change things
 /** Tools that read nothing of the user's records: called alone, a question about their calendar, tasks or notes is unanswered. */
 const NOT_A_LOOKUP = new Set(["search_conversations", "weather", "location", "calculate", "consult_oracle", "remember", "rewrite_topic",
-  "remember_picture", "forget_picture"]);
+  "remember_picture", "forget_picture", "put_picture_on"]);
 let proposals = []; // [{ name, args }], all put forward in the same turn
 let agreedTo = ""; // what the user said yes to this turn: the question asked, and what was carried out on it
 /** Changes a yes never covers beyond what it named: what takes something away is asked about each time. */
@@ -3590,6 +3644,10 @@ async function ask(text, { typed = false, files = [], attached: given = [] } = {
         } else if (call.function.name === "remember_picture") {
           emit({ type: "look", source: String(call.function.arguments?.source ?? "camera") });
           result = await rememberPicture(call.function.arguments ?? {});
+          if (mine !== turn) return;
+        } else if (call.function.name === "put_picture_on") {
+          if (String(call.function.arguments?.source ?? "camera") !== "remembered") emit({ type: "look", source: String(call.function.arguments?.source ?? "camera") });
+          result = await putPictureOn(call.function.arguments ?? {});
           if (mine !== turn) return;
         } else if (call.function.name === "forget_picture") {
           result = forgetPicture(call.function.arguments ?? {});
