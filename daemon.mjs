@@ -126,6 +126,11 @@ const defaults = {
   knownVoicesOnly: true,
   voiceThreshold: 0.4,
   wakeThreshold: 0.25,
+  // A laptop with its lid shut does not listen for the wake word. Shut, it is awake still (a lid set to do nothing,
+  // a screen plugged in), and heard a conversation held with another device across the room: it answered instead,
+  // and the device being spoken to stood down. Off for a machine whose lid says it is shut when it is not (a
+  // convertible folded into a tablet, say): `heymorgan device lidDeaf false`.
+  lidDeaf: true,
   // Spoken when the wake word is heard with nothing after it.
   wakeReply: "Yes?",
   // After a spoken answer, keep listening this long for a reply with no wake
@@ -4439,6 +4444,21 @@ function resetUtterance() {
   loudRun = 0;
 }
 
+// Whether this machine's lid is shut (/proc/acpi/button/lid), looked at once a second; open where there is none.
+let lidLooked = 0;
+let lidShutNow = false;
+function lidShut() {
+  if (!cfg.lidDeaf) return false;
+  const now = Date.now();
+  if (now - lidLooked < 1000) return lidShutNow;
+  lidLooked = now;
+  try {
+    const dir = "/proc/acpi/button/lid";
+    lidShutNow = readdirSync(dir).some((lid) => /closed/.test(readFileSync(join(dir, lid, "state"), "utf8")));
+  } catch { lidShutNow = false; }
+  return lidShutNow;
+}
+
 function onFrame(frame) {
   let sum = 0;
   for (let i = 0; i < FRAME; i += 2) sum += frame.readInt16LE(i) ** 2;
@@ -4447,6 +4467,8 @@ function onFrame(frame) {
   recent.push(frame);
   if (recent.length > 66) recent.shift();
   if (!active && state === "transcribing") return resetUtterance();
+  // Shut, it hears no wake word (and no interrupting word): the turn it was already in carries on.
+  if (!active && lidShut()) return resetUtterance();
   if (spot && !active) {
     const hit = spot.feed(frame);
     if (hit && process.env.HEYMORGAN_DEBUG) console.error(`spotter: "${hit}" state=${state} utterance=${Boolean(utterance)} checking=${checkingWake}`);
