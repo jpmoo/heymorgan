@@ -57,8 +57,10 @@ A few things are true whichever setup you pick:
   window and a place to chat. Everything they set can also be set with
   `heymorgan settings`, `heymorgan device …` and `heymorgan admin …`, and you
   can talk to Morgan with `heymorgan chat`, `heymorgan window` or a wake word.
-- **When two devices hear "Hey Morgan"**, the one that heard it best answers
-  ([protocol.md](docs/protocol.md) §5). Voiceprints live on the brain. The first
+- **When two devices hear "Hey Morgan"**, the one that heard it loudest answers
+  ([protocol.md](docs/protocol.md) §5); each device's `micOffset` evens out
+  microphones that differ (say "Hey Morgan" from the same distance to each, and
+  compare `wakeLevel` in `heymorgan status`). Voiceprints live on the brain. The first
   device to learn a voice teaches it to every device, and any device can learn
   it again for itself (`heymorgan enroll <name> --here`).
 - **`heymorgan status` says which setup is running.** On a device, `"role"` is

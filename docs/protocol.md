@@ -692,7 +692,7 @@ Speech, asked of the brain (1.11). Sound is 16 kHz 16-bit mono PCM, base64, in;
 | `seed` | `name`, `vectors` | `{ enrolled }`: a voice taught on this device before its brain did its speech, kept for every device unless the brain has one of that name. A device sends its own on connecting. |
 | `forget` | `name`, `scope` | `{ enrolled }` |
 | `voices` | — | `{ installed, enrolled, prints: [{ name, t, own }] }` |
-| `wake` | `score`: how far the wake word stood above the room's noise, as the device heard it | `{ go }`. With more than one device that can hear it, the brain waits 300 ms for others that heard it, and only the one with the highest score is told `go: true`; one heard within 2 seconds after a device was chosen is told `go: false` at once. A device that cannot reach the brain, or gets no answer in 1.5 seconds, goes ahead. |
+| `wake` | `score`: how loud the wake word was as the device heard it — its loudest 400 ms in dB below full scale, plus the device's `micOffset` (its microphone calibrated against the others; `heymorgan status` shows the last `wakeLevel`). It was how far the word stood above the room's noise, which favored a quiet microphone far off over a noisy one close by | `{ go }`. With more than one device that can hear it, the brain waits 300 ms for others that heard it, and only the one with the highest score is told `go: true`; one heard within 2 seconds after a device was chosen is told `go: false` at once. A device that cannot reach the brain, or gets no answer in 1.5 seconds, goes ahead. |
 
 Abilities:
 

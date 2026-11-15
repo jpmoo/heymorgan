@@ -4735,11 +4735,25 @@ function lostSpeech(error) {
 }
 
 // How well this device heard it: how far the speech stands above the room's own noise.
+// How loud the wake word was here, for the brain to weigh against other devices (`arbitrate`): the loudest
+// 400 ms of what was heard, in dB below full scale, plus this device's `micOffset`. It was the voice over this
+// microphone's own background, which favored a quiet microphone across the room over a hissing one close by — a
+// laptop with its lid shut beat the mini being spoken to (2026-11-14). Loudness is fair once each microphone's
+// offset is set: the same "Hey Morgan" from the same distance should score alike on each (`heymorgan status`,
+// `wakeLevel`, shows this device's last; `heymorgan device micOffset <dB>` sets it).
+let lastWakeLevel = null;
 function loudness(pcm) {
-  let sum = 0;
-  const count = Math.max(1, pcm.length / 2);
-  for (let i = 0; i + 1 < pcm.length; i += 2) sum += pcm.readInt16LE(i) ** 2;
-  return Number((Math.sqrt(sum / count) / Math.max(floor, 30)).toFixed(2));
+  const span = 6400; // 400 ms of 16-bit mono at 16 kHz
+  let best = 0;
+  for (let start = 0; start < pcm.length; start += span / 2) {
+    let sum = 0;
+    const end = Math.min(pcm.length, start + span);
+    for (let i = start; i + 1 < end; i += 2) sum += pcm.readInt16LE(i) ** 2;
+    best = Math.max(best, Math.sqrt(sum / Math.max(1, (end - start) / 2)));
+  }
+  const db = 20 * Math.log10(Math.max(best, 1) / 32768);
+  lastWakeLevel = Number(db.toFixed(1));
+  return Number((db + (Number(cfg.micOffset) || 0)).toFixed(1));
 }
 
 // When more than one device heard the wake word, the brain lets the one that
@@ -5845,7 +5859,7 @@ async function clientCommand(command, rest, line, reply) {
   if (command === "status" && answer?.ok) {
     // The server's state, with what this client hears and speaks with.
     Object.assign(answer, { role: "client", server: CLIENT.server, device: CLIENT.device ?? hostname(), ...speechStatus(), wakeWord: cfg.wakeWord,
-      wakeEngine: spot ? "spotter" : "transcribe", muted });
+      wakeEngine: spot ? "spotter" : "transcribe", muted, wakeLevel: lastWakeLevel, micOffset: Number(cfg.micOffset) || 0 });
   }
   if (answer?.ok === false && ["say", "type", "ask"].includes(command)) cannotReach(answer.error, command === "say");
   return reply(answer ?? { ok: false, error: "no answer" });
