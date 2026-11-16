@@ -25,6 +25,7 @@ import { Transcript, describe, describeThread } from "./history.mjs";
 import * as wake from "./wake.mjs";
 import { LOCAL_ONLY, createAdmin } from "./admin.mjs";
 import * as reminders from "./reminders.mjs";
+import { createProjects } from "./projects.mjs";
 import { checkDone, sortTurn } from "./sort.mjs";
 import { calculate } from "./calc.mjs";
 import * as weather from "./weather.mjs";
@@ -2305,6 +2306,22 @@ const mcpClients = new Map();
 let mcpTools = []; // in Ollama's tool format, named server__tool
 
 const mcpAll = new Map(); // per server: every tool it offers, or why it could not be reached
+// Project chat (projects.mjs): a conversation with one project, on the brain, with Morgan's model and the Hermes
+// connection's tools that only read. Which connection is Hermes: the one that can say a project's details.
+const projectChat = BRAIN ? createProjects({
+  dir: process.env.HEYMORGAN_MEMORY ? join(MEMORY, "projects") : join(SHARE, "projects"),
+  cfg: () => cfg,
+  hermes: () => {
+    const server = [...mcpAll].find(([name, held]) => mcpClients.has(name) && held.tools?.some?.((tool) => tool.name === "project_info"))?.[0];
+    if (!server) return null;
+    const client = mcpClients.get(server);
+    const tools = (mcpAll.get(server).tools ?? []).filter(readOnly).map((tool) => ({
+      type: "function",
+      function: { name: tool.name, description: tool.description ?? "", parameters: tool.inputSchema ?? { type: "object", properties: {} } },
+    }));
+    return { name: server, call: (tool, args) => client.call(tool, args), tools };
+  },
+}) : null;
 
 // Tools the servers offer that the model has not been given.
 const withheld = () => [...mcpAll].flatMap(([server, known]) => (known.tools ?? [])
@@ -4921,6 +4938,12 @@ function handle(line, socket) {
       const count = Math.min(Number(rest[0]) || 100, logLines.length);
       return reply({ ok: true, lines: logLines.slice(-count) });
     }
+    case "project": {
+      // project <json>: a conversation with one project (projects.mjs).
+      if (!projectChat) return reply({ ok: false, error: "project chat runs on the brain" });
+      projectChat.command(rest.join(" ")).then(reply, (error) => reply({ ok: false, error: error.message }));
+      return;
+    }
     case "search": {
       // search <text>: past conversations by what they were about — by meaning
       // (the query embedded here, on the brain, with the exchanges' own model)
@@ -5847,7 +5870,8 @@ async function clientCommand(command, rest, line, reply) {
     line = `ask ${JSON.stringify({ text: String(turnOf.text ?? ""), attached })}`;
   }
   // Settings may set the server working for a while (a tidying of memory): it is given longer.
-  const answer = await remote(line, command === "admin" ? 300_000 : 45_000);
+  // A project's turn may look things up and think twice (its reply, then where it stands): given longer too.
+  const answer = await remote(line, command === "admin" ? 300_000 : command === "project" ? 200_000 : 45_000);
   // A saved picture to look at in settings: put where this machine can show it.
   if (command === "admin" && /"op"\s*:\s*"memory\.picture\.view"/.test(line) && answer?.ok && answer.data) {
     const file = join(RUNTIME, `heymorgan-view-${Date.now()}.jpg`);
