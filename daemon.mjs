@@ -2306,20 +2306,24 @@ const mcpClients = new Map();
 let mcpTools = []; // in Ollama's tool format, named server__tool
 
 const mcpAll = new Map(); // per server: every tool it offers, or why it could not be reached
-// Project chat (projects.mjs): a conversation with one project, on the brain, with Morgan's model and the Hermes
-// connection's tools that only read. Which connection is Hermes: the one that can say a project's details.
+// Project chat (projects.mjs): a conversation with one project, on the brain, with Morgan's model. It reads through
+// Talaris — the tools a device running it offers, the ones that only read — where a Talaris machine is about, and
+// through Hermes only where none is: Talaris is where the projects are kept; Hermes, when there, is a copy.
 const projectChat = BRAIN ? createProjects({
   dir: process.env.HEYMORGAN_MEMORY ? join(MEMORY, "projects") : join(SHARE, "projects"),
   cfg: () => cfg,
-  hermes: () => {
-    const server = [...mcpAll].find(([name, held]) => mcpClients.has(name) && held.tools?.some?.((tool) => tool.name === "project_info"))?.[0];
-    if (!server) return null;
-    const client = mcpClients.get(server);
-    const tools = (mcpAll.get(server).tools ?? []).filter(readOnly).map((tool) => ({
-      type: "function",
-      function: { name: tool.name, description: tool.description ?? "", parameters: tool.inputSchema ?? { type: "object", properties: {} } },
-    }));
-    return { name: server, call: (tool, args) => client.call(tool, args), tools };
+  sources: () => {
+    const reading = ([name, held]) => ({
+      server: name,
+      call: (tool, args) => mcpClients.get(name).call(tool, args),
+      tools: (held.tools ?? []).filter((tool) => tool?.name && readOnly(tool)),
+    });
+    const held = [...mcpAll].filter(([name, h]) => mcpClients.has(name) && Array.isArray(h.tools));
+    // One Talaris, the first offered: every machine's holds the same projects (they sync), and one set of tools is clearer.
+    const talaris = held.find(([, h]) => h.device && h.tools.some((tool) => tool.name === "talaris_page_read"));
+    if (talaris) return [reading(talaris)];
+    const hermes = held.find(([, h]) => h.tools.some((tool) => tool.name === "project_info"));
+    return hermes ? [reading(hermes)] : [];
   },
 }) : null;
 

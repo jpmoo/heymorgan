@@ -4,22 +4,26 @@
 // Project chat: a conversation with one project at a time, kept on the brain so it is the same from every device.
 //
 // A project speaks for itself, not as Morgan: helpful with whatever it is asked, and always working out where it stands
-// today against everything else going on — what is due today and overdue across every project, and today's calendar.
-// After each reply it says so in a line of its own (its `standing`: now, soon or later, and why), the seed of the
-// claims Morgan will one day referee.
+// today against everything else going on. After each reply it says so in a line of its own (its `standing`: now, soon
+// or later, and why), the seed of the claims Morgan will one day referee.
 //
-// It is Morgan's model (`ollama`) and Morgan's Hermes connection, nothing else of Morgan's: its own history (one file a
-// project, under `projects/`), its own prompt, and only the tools that say they only read. Nothing here reaches the
-// Oracle.
+// What it knows comes from where the user keeps it. Asked from Talaris, each turn carries the project's brief
+// (`context`: its About, its pages, canvases and files, its open tasks with their notes, the people they name, what is
+// tied to it from elsewhere, and the rest of the day — due, overdue, the calendar); the latest is kept, for asking when
+// no Talaris is about. With no brief and none kept, Hermes is asked instead, where it is connected. Its tools are the
+// ones that say they only read: Talaris's (through the device that runs it) and Hermes', whichever are here.
+//
+// It is Morgan's model (`ollama`), nothing else of Morgan's: its own history (one file a project, under `projects/`)
+// and its own prompt. Nothing here reaches the Oracle.
 //
 // One command, `project <json>`:
-//   {op:"list"}                       the projects, with their open counts
-//   {op:"history", project}           what was said, and the standing
-//   {op:"chat", project, text}        a turn: { reply, standing }
-//   {op:"clear", project}             the conversation forgotten (the standing kept)
-// `project` is a Hermes project's id or its title.
+//   {op:"list"}                                 the projects Hermes has (Talaris lists its own)
+//   {op:"history", project, name?}              what was said, and the standing
+//   {op:"chat", project, name?, text, context?} a turn: { reply, standing }
+//   {op:"clear", project, name?}                the conversation forgotten (the standing kept)
+// `project` is the project's own id where the asker has one (Talaris's), else a Hermes id or title.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Messages kept for the model: the latest this many (the file keeps more). */
@@ -27,24 +31,26 @@ const CONTEXT_MESSAGES = 24;
 /** Messages kept in a project's file. */
 const KEPT_MESSAGES = 200;
 /** Tool rounds in one turn, at most. */
-const ROUNDS = 4;
+const ROUNDS = 5;
+/** A kept brief older than this is said to be so. */
+const STALE_MS = 12 * 60 * 60 * 1000;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SAFE_ID = /^[A-Za-z0-9_-]{1,80}$/;
 
 /**
  * @param {object} o
- * @param {string} o.dir          where each project's conversation is kept
- * @param {() => object} o.cfg    the brain's settings, read at each turn (the model may be changed in settings)
- * @param {() => {name: string, call: (tool: string, args: object) => Promise<string>, tools: object[]} | null} o.hermes
- *   the Hermes connection: its server name, a call, and its read-only tools in Ollama's form (named `tool`, unprefixed)
+ * @param {string} o.dir     where each project's conversation is kept
+ * @param {() => object} o.cfg   the brain's settings, read at each turn (the model may be changed in settings)
+ * @param {() => {server: string, call: (tool: string, args: object) => Promise<string>, tools: object[]}[]} o.sources
+ *   the connections a project may read through — each its server's name, a call, and its read-only tools (MCP form)
  */
-export function createProjects({ dir, cfg, hermes }) {
+export function createProjects({ dir, cfg, sources }) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const busy = new Map(); // project id → the turn running, so two at once on one project wait in line
+  const busy = new Map(); // project key → the turn running, so two at once on one project wait in line
 
-  const fileOf = (id) => join(dir, `${id}.json`);
-  const load = (id) => {
-    try { return JSON.parse(readFileSync(fileOf(id), "utf8")); } catch { return { id, name: "", messages: [], standing: null }; }
+  const fileOf = (key) => join(dir, `${key}.json`);
+  const load = (key) => {
+    try { return JSON.parse(readFileSync(fileOf(key), "utf8")); } catch { return { id: key, name: "", messages: [], standing: null, brief: null }; }
   };
   const save = (state) => {
     state.messages = state.messages.slice(-KEPT_MESSAGES);
@@ -53,25 +59,60 @@ export function createProjects({ dir, cfg, hermes }) {
     renameSync(tmp, fileOf(state.id));
   };
 
-  const link = () => {
-    const h = hermes();
-    if (!h) throw new Error("Hermes isn't connected on the brain");
-    return h;
-  };
+  /** The tools a project may call, named `server__tool`, in Ollama's form; and how to call one by that name. */
+  function toolbox() {
+    const tools = [], calls = new Map();
+    for (const s of sources()) {
+      for (const t of s.tools) {
+        const name = `${s.server}__${t.name}`;
+        tools.push({ type: "function", function: { name, description: t.description ?? "", parameters: t.inputSchema ?? { type: "object", properties: {} } } });
+        calls.set(name, (args) => s.call(t.name, args));
+      }
+    }
+    return { tools, calls };
+  }
+  /** Hermes, where it is connected: the connection that can say a project's details. */
+  const hermes = () => sources().find((s) => s.tools.some((t) => t.name === "project_info")) ?? null;
 
-  /** A project by id or title: its id, name and Hermes' account of it (about, fields, open tasks). */
-  async function resolve(project) {
+  /**
+   * Which project: its key (the file its conversation is kept in) and name. An id the asker gives is taken as it is;
+   * a title, or an id with nothing kept, is looked up in Hermes where it is connected.
+   */
+  async function which({ project, name }) {
     const asked = String(project ?? "").trim();
     if (!asked) throw new Error("which project?");
-    const info = await link().call("project_info", { project: asked });
+    if (SAFE_ID.test(asked) && (name || existsSync(fileOf(asked)))) return adopt(asked, String(name ?? "").trim());
+    const h = hermes();
+    if (!h) throw new Error(`no project ${asked} here`);
+    const info = await h.call("project_info", { project: asked });
     const id = /^Id:\s*(\S+)/m.exec(info)?.[1];
-    const name = /^Project:\s*(.+)$/m.exec(info)?.[1]?.trim();
-    if (!id || !UUID.test(id)) throw new Error(info.split("\n")[0].slice(0, 200) || `no project ${asked}`);
-    return { id, name: name || asked, info };
+    const title = /^Project:\s*(.+)$/m.exec(info)?.[1]?.trim();
+    if (!id || !SAFE_ID.test(id)) throw new Error(info.split("\n")[0].slice(0, 200) || `no project ${asked}`);
+    return { key: id, name: title || asked, info };
+  }
+
+  /**
+   * A project asked by its own id for the first time, with a conversation kept under another (by Hermes' id, before
+   * Talaris's were used): that conversation taken over, by its name.
+   */
+  function adopt(key, name) {
+    if (!existsSync(fileOf(key)) && name) {
+      for (const f of readdirSync(dir).filter((x) => x.endsWith(".json"))) {
+        const old = load(f.slice(0, -5));
+        if (old.name === name && old.id !== key) {
+          save({ ...old, id: key });
+          renameSync(fileOf(old.id), `${fileOf(old.id)}.adopted`);
+          break;
+        }
+      }
+    }
+    return { key, name: name || load(key).name || key, info: null };
   }
 
   async function list() {
-    const text = await link().call("project_list", {});
+    const h = hermes();
+    if (!h) return [];
+    const text = await h.call("project_list", {});
     const projects = [];
     for (const line of text.split("\n")) {
       const m = /^(.+?) — (\d+) open tasks? \(([0-9a-f-]{36})\)\s*$/i.exec(line.trim());
@@ -80,47 +121,49 @@ export function createProjects({ dir, cfg, hermes }) {
     return projects;
   }
 
-  /** Today, as the project weighs itself against it: the day and hour, the calendar, what is due and overdue everywhere. */
-  async function today() {
-    const c = cfg();
-    const zone = c.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const now = new Date();
-    const day = now.toLocaleDateString("en-US", { timeZone: zone, weekday: "long", year: "numeric", month: "long", day: "numeric" });
-    const hour = now.toLocaleTimeString("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit" });
-    const iso = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-    const h = link();
+  /** The day, from Hermes: for a project asked with no brief (Talaris's carries its own). */
+  async function hermesDay() {
+    const h = hermes();
+    if (!h) return "";
+    const zone = cfg().timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const iso = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     const safely = async (tool, args) => { try { return (await h.call(tool, args)).trim(); } catch (error) { return `(${tool} failed: ${error.message})`; } };
     const [calendar, due, overdue] = await Promise.all([
       safely("calendar_events", { date: iso }),
       safely("task_find", { when: "today", status: "open", limit: 40 }),
       safely("task_find", { when: "overdue", status: "open", limit: 40 }),
     ]);
-    return { iso, text: [`Now: ${day}, ${hour} (${zone}).`, "", "Today's calendar:", calendar || "(nothing)", "",
-      "Due today, across every project:", due || "(nothing)", "", "Overdue, across every project:", overdue || "(nothing)"].join("\n") };
+    return ["Today's calendar:", calendar || "(nothing)", "", "Due today, across every project:", due || "(nothing)", "",
+      "Overdue, across every project:", overdue || "(nothing)"].join("\n");
   }
 
-  function prompt(name, info, day) {
-    const who = cfg().userName || "the user";
+  function prompt(name, facts) {
+    const c = cfg();
+    const who = c.userName || "the user";
+    const zone = c.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const now = new Date();
+    const day = now.toLocaleDateString("en-US", { timeZone: zone, weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    const hour = now.toLocaleTimeString("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit" });
     return [
       `You are the project "${name}", talking with ${who} in a text chat. You speak for this project — its purpose, its tasks,`,
-      "its commitments — in the first person (\"I\", \"my tasks\"). You are not Morgan and not a general assistant.",
+      "its commitments, its pages and canvases — in the first person (\"I\", \"my tasks\"). You are not Morgan and not a general assistant.",
       "",
       `Be genuinely helpful with whatever ${who} asks about this project: planning, next steps, drafting, thinking it through.`,
       "Always keep track of where this project stands TODAY against everything else on their plate (the calendar, what is",
       "due and overdue across all projects, below). When it bears on the conversation, say plainly whether this project",
       "deserves their attention today or should wait, and why. Be honest when something else matters more than you.",
       "",
+      "Look things up rather than offering to: when a question touches a page, a canvas, a task's details, a person or",
+      "anything tied to the project, read it with your tools first and answer from what it says. Your tools only read.",
+      "You cannot change anything: when a change would help, say exactly what to do and the user will do it.",
       "Use only the facts given here or returned by your tools. Never invent dates, durations, prices or rules.",
-      "Dates: compare against today's date below; something due later this week has not passed.",
-      "You can look things up with your tools (they only read). You cannot change anything: when a change would help,",
-      "say exactly what to do and the user will do it.",
+      "Dates: compare against today's date; something due later this week has not passed.",
       "Keep replies short and plain, light markdown at most.",
       "",
-      "=== This project, from Hermes ===",
-      info.trim(),
+      `Now: ${day}, ${hour} (${zone}).`,
       "",
-      "=== Today ===",
-      day.text,
+      "=== This project, and the day ===",
+      facts.trim(),
     ].join("\n");
   }
 
@@ -158,65 +201,80 @@ export function createProjects({ dir, cfg, hermes }) {
     } catch { return null; }
   }
 
-  async function chat(project, text) {
-    const said = String(text ?? "").trim();
+  async function chat(ask) {
+    const said = String(ask.text ?? "").trim();
     if (!said) throw new Error("nothing said");
-    const { id, name, info } = await resolve(project);
+    const { key, name, info } = await which(ask);
     // One turn at a time on a project: a second waits for the first.
-    const before = busy.get(id) ?? Promise.resolve();
+    const before = busy.get(key) ?? Promise.resolve();
     let done;
     const mine = new Promise((r) => { done = r; });
     const chained = before.then(() => mine);
-    busy.set(id, chained);
+    busy.set(key, chained);
     await before;
     try {
-      const state = load(id);
+      const state = load(key);
+      state.id = key;
       state.name = name;
-      const h = link();
-      const day = await today();
-      const system = prompt(name, info, day);
-      const asked = { role: "user", content: said, t: Date.now() };
+      // What it knows: the brief brought now, else the one kept (said how old), else Hermes'.
+      const context = typeof ask.context === "string" ? ask.context.trim() : "";
+      let facts;
+      if (context) {
+        state.brief = { text: context, t: Date.now() };
+        facts = context;
+      } else if (state.brief?.text) {
+        const age = Date.now() - state.brief.t;
+        facts = `${state.brief.text}${age > STALE_MS ? `\n\n(This was as of ${new Date(state.brief.t).toLocaleString("en-US")}; it may be out of date.)` : ""}`;
+      } else {
+        const project = info ?? (hermes() ? await hermes().call("project_info", { project: name }).catch(() => "") : "");
+        if (!project) throw new Error(`nothing known of ${name} here: ask from Talaris once`);
+        facts = `${project}\n\n${await hermesDay()}`;
+      }
+      const system = prompt(name, facts);
+      const { tools, calls } = toolbox();
       const talk = [...state.messages.slice(-CONTEXT_MESSAGES).map(({ role, content }) => ({ role, content })), { role: "user", content: said }];
-      const tools = h.tools;
       let reply = "";
       for (let round = 0; round <= ROUNDS; round++) {
         const message = await ollama({ messages: [{ role: "system", content: system }, ...talk], ...(round < ROUNDS && tools.length ? { tools } : {}) });
-        const calls = message.tool_calls ?? [];
-        if (!calls.length) { reply = String(message.content ?? "").replace(/^\s*(?:thought|thinking)\s*\n/i, "").trim(); break; }
-        talk.push({ role: "assistant", content: message.content ?? "", tool_calls: calls });
-        for (const call of calls) {
+        const asked = message.tool_calls ?? [];
+        if (!asked.length) { reply = String(message.content ?? "").replace(/^\s*(?:thought|thinking)\s*\n/i, "").trim(); break; }
+        talk.push({ role: "assistant", content: message.content ?? "", tool_calls: asked });
+        for (const call of asked) {
           const toolName = call.function?.name ?? "";
+          const run = calls.get(toolName);
           let result;
-          if (!tools.some((t) => t.function.name === toolName)) result = `Unknown tool: ${toolName}`;
+          if (!run) result = `Unknown tool: ${toolName}`;
           else {
-            try { result = (await h.call(toolName, call.function.arguments ?? {})).slice(0, 8000); } catch (error) { result = `The tool failed: ${error.message}`; }
+            try { result = String(await run(call.function.arguments ?? {})).slice(0, 10_000); } catch (error) { result = `The tool failed: ${error.message}`; }
           }
           talk.push({ role: "tool", content: result, tool_name: toolName });
         }
       }
       if (!reply) reply = "I couldn't put an answer together just now.";
-      state.messages.push(asked, { role: "assistant", content: reply, t: Date.now() });
+      state.messages.push({ role: "user", content: said, t: Date.now() }, { role: "assistant", content: reply, t: Date.now() });
       state.standing = (await stand(system, [...talk.filter((m) => m.role !== "tool" && !m.tool_calls), { role: "assistant", content: reply }])) ?? state.standing;
       save(state);
-      return { id, name, reply, standing: state.standing };
+      return { id: key, name, reply, standing: state.standing };
     } finally {
       done();
-      if (busy.get(id) === chained) busy.delete(id);
+      if (busy.get(key) === chained) busy.delete(key);
     }
   }
 
-  async function history(project) {
-    const { id, name } = await resolve(project);
-    const state = load(id);
-    return { id, name, messages: state.messages.map(({ role, content, t }) => ({ role, content, t })), standing: state.standing };
+  async function history(ask) {
+    const { key, name } = await which(ask);
+    const state = load(key);
+    return { id: key, name: state.name || name, messages: state.messages.map(({ role, content, t }) => ({ role, content, t })), standing: state.standing };
   }
 
-  async function clear(project) {
-    const { id, name } = await resolve(project);
-    const state = load(id);
-    state.messages = [];
-    if (existsSync(fileOf(id))) save(state); else rmSync(fileOf(id), { force: true });
-    return { id, name };
+  async function clear(ask) {
+    const { key, name } = await which(ask);
+    if (existsSync(fileOf(key))) {
+      const state = load(key);
+      state.messages = [];
+      save(state);
+    }
+    return { id: key, name };
   }
 
   /** The `project <json>` command: its answer, as the socket sends it back. */
@@ -226,9 +284,9 @@ export function createProjects({ dir, cfg, hermes }) {
     try {
       switch (ask.op) {
         case "list": return { ok: true, projects: await list() };
-        case "history": return { ok: true, ...(await history(ask.project)) };
-        case "chat": return { ok: true, ...(await chat(ask.project, ask.text)) };
-        case "clear": return { ok: true, ...(await clear(ask.project)) };
+        case "history": return { ok: true, ...(await history(ask)) };
+        case "chat": return { ok: true, ...(await chat(ask)) };
+        case "clear": return { ok: true, ...(await clear(ask)) };
         default: return { ok: false, error: "op: list | history | chat | clear" };
       }
     } catch (error) {
