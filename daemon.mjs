@@ -670,7 +670,11 @@ async function capture(source, args) {
       // The first frames are dark while the camera settles its exposure.
       await run("ffmpeg", ["-loglevel", "error", "-y", "-f", "v4l2", "-i", cfg.camera, "-vf", `select=gte(n\\,${args?.patient ? 45 : 12})`, "-frames:v", "1", file], { timeout: 20_000 });
     }
-    return readFileSync(file);
+    const bytes = readFileSync(file);
+    // What the camera saw, shown on this machine's own panel, under the card that says it looked. Taken here, so shown
+    // here only — never sent on, and not a step, so never kept with the conversation.
+    if (source === "camera") emit({ type: "picture", source, mime: "image/jpeg", data: bytes.toString("base64") });
+    return bytes;
   } finally {
     rmSync(file, { force: true });
   }
